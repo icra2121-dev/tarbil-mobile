@@ -174,6 +174,7 @@ function CBSContent() {
   const params = useLocalSearchParams();
   const mapRef = useRef<MapView | null>(null);
   const refreshRequestRef = useRef(0);
+  const autoFocusedQueryRef = useRef("");
   const [units, setUnits] = useState<CbsUnit[]>([]);
   const [workflowTasks, setWorkflowTasks] = useState<any[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -488,6 +489,28 @@ function CBSContent() {
       );
     }
   }, []);
+
+  useEffect(() => {
+    const needle = deferredQuery.trim();
+
+    if (!needle || loading || filteredUnits.length !== 1) {
+      if (!needle) {
+        autoFocusedQueryRef.current = "";
+      }
+
+      return;
+    }
+
+    const [unit] = filteredUnits;
+    const querySignature = `${needle}:${unit.id}`;
+
+    if (autoFocusedQueryRef.current === querySignature) {
+      return;
+    }
+
+    autoFocusedQueryRef.current = querySignature;
+    focusUnit(unit);
+  }, [deferredQuery, filteredUnits, focusUnit, loading]);
 
   function canToggleLayer(nextGreenhouses: boolean) {
     if (!nextGreenhouses) {
