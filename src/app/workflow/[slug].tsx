@@ -98,7 +98,7 @@ export default function WorkflowScreen() {
           <MaterialCommunityIcons name={workflow.icon} color={workflow.accent} size={26} />
         </View>
         <View style={styles.headerText}>
-          <Text style={styles.kicker}>KOBÜDS 4.0</Text>
+          <Text style={styles.kicker}>KOBÜDS 4.1</Text>
           <Text style={styles.title}>{workflow.title}</Text>
         </View>
       </View>

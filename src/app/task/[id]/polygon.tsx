@@ -9,8 +9,10 @@ import { BottomTabMenu } from "../../../components/BottomTabMenu";
 import {
   ANTALYA_REGION,
   getCenter,
+  isDefaultCbsFallbackPolygon,
   loadCbsUnits,
   parsePolygon,
+  saveCbsUnitPolygon,
   type CbsUnit,
   type MapPoint,
 } from "../../../services/cbs";
@@ -128,7 +130,11 @@ function getSafeInitialPolygon(task: any, units: CbsUnit[]) {
     }
   }
 
-  if (referencePolygon.length >= 3 && (!nextPoints.length || isSavedPolygonUnsafe(nextPoints, referencePolygon))) {
+  if (
+    referencePolygon.length >= 3 &&
+    !isDefaultCbsFallbackPolygon(referencePolygon) &&
+    (!nextPoints.length || isSavedPolygonUnsafe(nextPoints, referencePolygon))
+  ) {
     corrected = nextPoints.length >= 3;
     nextPoints = referencePolygon;
   }
@@ -522,7 +528,11 @@ export default function TaskPolygonScreen() {
       return;
     }
 
-    if (taskUnit?.greenhousePolygon?.length && isSavedPolygonUnsafe(points, taskUnit.greenhousePolygon)) {
+    if (
+      taskUnit?.greenhousePolygon?.length &&
+      !isDefaultCbsFallbackPolygon(taskUnit.greenhousePolygon) &&
+      isSavedPolygonUnsafe(points, taskUnit.greenhousePolygon)
+    ) {
       Alert.alert(
         "Poligon uyumsuz",
         "Çizilen saha poligonu seçilen ünitenin gerçek alanına göre çok küçük, çok büyük veya uzak görünüyor. Köşe noktalarını sera sınırına göre düzeltin.",
@@ -536,6 +546,13 @@ export default function TaskPolygonScreen() {
       const payload = getPolygonPayload(task?.description, points);
       const fallbackPayload = getPolygonFallbackPayload(task?.description, points);
       const result = await updateTaskOnlineOrQueue(taskId, payload, "CBS poligonu kaydı", fallbackPayload);
+      const cbsResult = taskUnit
+        ? await saveCbsUnitPolygon(taskUnit, payload.greenhouse_polygon as MapPoint[]).catch((error) => ({
+            saved: false,
+            targets: [],
+            errors: [error?.message || String(error)],
+          }))
+        : null;
 
       setTask((current: any) => ({
         ...current,
@@ -545,8 +562,10 @@ export default function TaskPolygonScreen() {
 
       if (result.queued) {
         Alert.alert("Sıraya alındı", "CBS poligonu internet geldiğinde sisteme aktarılacak.");
+      } else if (cbsResult?.saved) {
+        Alert.alert("Kaydedildi", `CBS poligonu göreve ve CBS kaydına aktarıldı: ${cbsResult.targets.join(", ")}`);
       } else {
-        Alert.alert("Kaydedildi", "CBS poligonu göreve aktarıldı.");
+        Alert.alert("Kaydedildi", "CBS poligonu göreve aktarıldı. CBS tablo yazma yetkisi veya poligon kolonu yoksa yalnızca görev kaydında tutulur.");
       }
 
       router.back();

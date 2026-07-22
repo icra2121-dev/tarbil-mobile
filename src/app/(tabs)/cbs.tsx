@@ -21,8 +21,11 @@ import {
   ANTALYA_REGION,
   CbsUnit,
   STATUS_LABEL,
+  buildFallbackPolygon,
   getCenter,
+  getCbsLookupHints,
   getQgisStatusLabel,
+  isDefaultCbsFallbackPolygon,
   loadCbsUnits,
   startInspectionFromUnit,
 } from "../../services/cbs";
@@ -38,7 +41,7 @@ import {
   type TaskWorkflowKind,
 } from "../../services/workflowGuard";
 
-const CACHE_KEY = "tarbil:cbs-units:v3";
+const CACHE_KEY = "tarbil:cbs-units:v4";
 const MAX_RENDERED_UNITS = 150;
 
 type UserMapLocation = {
@@ -162,6 +165,13 @@ function getUnitWorkflowTask(unit: CbsUnit, workflowKind: TaskWorkflowKind, task
   return getUnitWorkflowTasks(unit, workflowKind, tasks)[0] || null;
 }
 
+function getAdministrativeSearchText(unit: CbsUnit) {
+  return [unit.village, unit.district, unit.city, "Türkiye"]
+    .map((value) => fixMojibake(value).trim())
+    .filter(hasMeaningfulUnitValue)
+    .join(", ");
+}
+
 export default function CBSScreen() {
   return (
     <RoleGate>
@@ -175,6 +185,7 @@ function CBSContent() {
   const mapRef = useRef<MapView | null>(null);
   const refreshRequestRef = useRef(0);
   const autoFocusedQueryRef = useRef("");
+  const geocodeCacheRef = useRef(new Map<string, UserMapLocation | null>());
   const [units, setUnits] = useState<CbsUnit[]>([]);
   const [workflowTasks, setWorkflowTasks] = useState<any[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -189,6 +200,7 @@ function CBSContent() {
   const [showLayerPanel, setShowLayerPanel] = useState(false);
   const [nearbyMode, setNearbyMode] = useState(false);
   const [openingAssignment, setOpeningAssignment] = useState(false);
+  const [openingPolygon, setOpeningPolygon] = useState(false);
   const [profile, setProfile] = useState<any>(null);
   const [staffLocations, setStaffLocations] = useState<LiveFieldLocation[]>([]);
   const [userLocation, setUserLocation] = useState<UserMapLocation | null>(null);
@@ -341,6 +353,7 @@ function CBSContent() {
   const selectedWorkflowInfo = selectedUnit ? unitWorkflowMap.get(selectedUnit.id)?.[activeWorkflowKind] : null;
   const selectedWorkflowState = selectedWorkflowInfo?.state || null;
   const selectedWorkflowTask = selectedWorkflowInfo?.task || null;
+  const selectedLookupHints = useMemo(() => (selectedUnit ? getCbsLookupHints(selectedUnit) : []), [selectedUnit]);
   const selectedWorkflowSummary = useMemo(
     () =>
       selectedUnit
@@ -474,6 +487,52 @@ function CBSContent() {
     };
   }, [focusUserLocation]);
 
+  const resolveUnitMapCenter = useCallback(async (unit: CbsUnit) => {
+    if (!isDefaultCbsFallbackPolygon(unit.greenhousePolygon)) {
+      return getCenter(unit.greenhousePolygon);
+    }
+
+    const searchText = getAdministrativeSearchText(unit);
+
+    if (!searchText) {
+      return getCenter(unit.greenhousePolygon);
+    }
+
+    if (geocodeCacheRef.current.has(searchText)) {
+      return geocodeCacheRef.current.get(searchText) || getCenter(unit.greenhousePolygon);
+    }
+
+    const geocoded = await Location.geocodeAsync(searchText).catch(() => []);
+    const firstResult = geocoded[0];
+    const center = firstResult
+      ? {
+          latitude: firstResult.latitude,
+          longitude: firstResult.longitude,
+        }
+      : null;
+
+    geocodeCacheRef.current.set(searchText, center);
+    return center || getCenter(unit.greenhousePolygon);
+  }, []);
+
+  const getUnitWithResolvedCenter = useCallback(
+    async (unit: CbsUnit) => {
+      if (!isDefaultCbsFallbackPolygon(unit.greenhousePolygon)) {
+        return unit;
+      }
+
+      const center = await resolveUnitMapCenter(unit);
+      const fallbackPolygon = buildFallbackPolygon(center);
+
+      return {
+        ...unit,
+        parcelPolygon: isDefaultCbsFallbackPolygon(unit.parcelPolygon) ? fallbackPolygon : unit.parcelPolygon,
+        greenhousePolygon: fallbackPolygon,
+      };
+    },
+    [resolveUnitMapCenter],
+  );
+
   const focusUnit = useCallback((unit: CbsUnit, animate = true) => {
     const center = getCenter(unit.greenhousePolygon);
 
@@ -487,8 +546,20 @@ function CBSContent() {
         },
         { duration: 450 },
       );
+
+      if (isDefaultCbsFallbackPolygon(unit.greenhousePolygon)) {
+        resolveUnitMapCenter(unit).then((resolvedCenter) => {
+          mapRef.current?.animateCamera(
+            {
+              center: resolvedCenter,
+              zoom: 14,
+            },
+            { duration: 550 },
+          );
+        });
+      }
     }
-  }, []);
+  }, [resolveUnitMapCenter]);
 
   useEffect(() => {
     const needle = deferredQuery.trim();
@@ -550,6 +621,41 @@ function CBSContent() {
       setTimeout(() => focusUnit(match), 0);
     }
   }, [assignedAdaNo, assignedParcelNo, assignedUnitNo, focusUnit, units]);
+
+  async function openPolygonEditor(unit: CbsUnit) {
+    if (openingPolygon) {
+      return;
+    }
+
+    setOpeningPolygon(true);
+
+    try {
+      const taskId = params.task_id ? String(params.task_id) : "";
+
+      if (taskId && isAssignedUnit(unit)) {
+        router.push(`/task/${taskId}/polygon` as any);
+        return;
+      }
+
+      const existingWorkflowTask = getUnitWorkflowTask(unit, activeWorkflowKind, workflowTasks);
+
+      if (existingWorkflowTask?.id) {
+        router.push(`/task/${existingWorkflowTask.id}/polygon` as any);
+        return;
+      }
+
+      const unitForPolygon = await getUnitWithResolvedCenter(unit);
+      const result = await startInspectionFromUnit(unitForPolygon, "Sahada", activeWorkflowKind);
+
+      if (result.task?.id) {
+        router.push(`/task/${result.task.id}/polygon` as any);
+      }
+    } catch (error: any) {
+      Alert.alert("Poligon ekranı açılamadı", error?.message || "CBS poligonu için görev kaydı hazırlanamadı.");
+    } finally {
+      setOpeningPolygon(false);
+    }
+  }
 
   async function openAssignmentScreen(unit: CbsUnit) {
     if (openingAssignment) {
@@ -904,6 +1010,17 @@ function CBSContent() {
             <Text style={styles.selectedUnitMeta} numberOfLines={1}>
               {fixMojibake(selectedUnit.district || "-")} / {fixMojibake(selectedUnit.village || "-")} · {fixMojibake(selectedUnit.adaNo || "-")}/{fixMojibake(selectedUnit.parcelNo || "-")}
             </Text>
+            <View style={styles.lookupSection}>
+              <Text style={styles.lookupSectionTitle}>CBS eşleşmesi</Text>
+              {selectedLookupHints.map((hint) => (
+                <View key={`${hint.label}-${hint.value}`} style={styles.lookupRow}>
+                  <Text style={styles.lookupLabel}>{hint.label}</Text>
+                  <Text style={styles.lookupValue} numberOfLines={2}>
+                    {hint.value}
+                  </Text>
+                </View>
+              ))}
+            </View>
             <View style={styles.workflowStatusStrip}>
               {selectedWorkflowSummary.map((item) => {
                 const color = WORKFLOW_STATE_COLOR[item.state];
@@ -928,10 +1045,20 @@ function CBSContent() {
                 Kayıt: {getTaskStatus(selectedWorkflowTask)}
               </Text>
             ) : null}
-            <Pressable onPress={() => openAssignmentScreen(selectedUnit)} style={styles.selectedUnitAction}>
-              <MaterialCommunityIcons name="chevron-right" color="white" size={18} />
-              <Text style={styles.selectedUnitActionText}>Ünite Detayı / Görev</Text>
-            </Pressable>
+            <View style={styles.selectedUnitActions}>
+              <Pressable onPress={() => openAssignmentScreen(selectedUnit)} style={[styles.selectedUnitAction, styles.selectedUnitDetailAction]}>
+                <MaterialCommunityIcons name="clipboard-text-outline" color="white" size={18} />
+                <Text style={styles.selectedUnitActionText}>Detay / Görev</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => openPolygonEditor(selectedUnit)}
+                style={[styles.selectedUnitAction, styles.selectedUnitPolygonAction, openingPolygon && styles.dimmedAction]}
+                disabled={openingPolygon}
+              >
+                <MaterialCommunityIcons name="shape-polygon-plus" color="white" size={18} />
+                <Text style={styles.selectedUnitActionText}>{openingPolygon ? "Açılıyor" : "Poligon Çiz"}</Text>
+              </Pressable>
+            </View>
           </View>
         ) : null}
       </View>
@@ -1264,6 +1391,37 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "700",
   },
+  lookupSection: {
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: "rgba(148,163,184,0.22)",
+    paddingVertical: 7,
+    gap: 5,
+  },
+  lookupSectionTitle: {
+    color: "#bfdbfe",
+    fontSize: 11,
+    fontWeight: "900",
+  },
+  lookupRow: {
+    flexDirection: "row",
+    gap: 8,
+    alignItems: "flex-start",
+  },
+  lookupLabel: {
+    width: 108,
+    color: "#94a3b8",
+    fontSize: 10,
+    fontWeight: "800",
+  },
+  lookupValue: {
+    flex: 1,
+    minWidth: 0,
+    color: "#e2e8f0",
+    fontSize: 10,
+    fontWeight: "800",
+    lineHeight: 14,
+  },
   workflowStatusStrip: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -1289,14 +1447,27 @@ const styles = StyleSheet.create({
     fontWeight: "900",
   },
   selectedUnitAction: {
+    flex: 1,
     minHeight: 42,
     borderRadius: 8,
-    backgroundColor: "#16a34a",
     alignItems: "center",
     justifyContent: "center",
     flexDirection: "row",
     gap: 6,
     marginTop: 2,
+  },
+  selectedUnitActions: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  selectedUnitDetailAction: {
+    backgroundColor: "#2563eb",
+  },
+  selectedUnitPolygonAction: {
+    backgroundColor: "#16a34a",
+  },
+  dimmedAction: {
+    opacity: 0.58,
   },
   selectedUnitActionText: {
     color: "white",
