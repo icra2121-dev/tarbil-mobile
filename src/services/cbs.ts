@@ -495,6 +495,38 @@ function mergeCbsUnits(...groups: CbsUnit[][]) {
   return [...map.values()];
 }
 
+function uniqueFilledValues(values: unknown[]) {
+  const seen = new Set<string>();
+
+  return values
+    .map((value) => fixMojibake(value).trim())
+    .filter((value) => {
+      if (!value || seen.has(value)) {
+        return false;
+      }
+
+      seen.add(value);
+      return true;
+    });
+}
+
+function getProductionCropText(rows: any[] = []) {
+  return uniqueFilledValues(rows.map((row) => row?.crop_name || row?.detected_crop || row?.crop)).join(", ");
+}
+
+function normalizeKobuksImportedUnit(raw: any, producer: any, productionRows: any[]): CbsUnit {
+  return normalizeLegacyUnit({
+    ...raw,
+    tc_no: producer?.tc_no || raw.producer_tc || raw.tc_no,
+    producer_name: producer?.full_name || raw.producer_name || raw.full_name,
+    phone: producer?.phone || raw.phone,
+    city: producer?.city || raw.city || raw.province || raw.il,
+    district: producer?.district || raw.district_name || raw.district || raw.ilce,
+    village: producer?.village || raw.village || raw.neighborhood || raw.mahalle,
+    crop_name: getProductionCropText(productionRows) || raw.detected_crop || raw.crop_name || raw.crop,
+  });
+}
+
 function hasStoredPolygonValue(value: unknown) {
   const rawValue = typeof value === "string" ? (() => {
     try {
@@ -558,11 +590,32 @@ export async function loadCbsUnits(): Promise<CbsUnit[]> {
     );
   }
 
-  const [kobuksResult] = await Promise.allSettled([fetchAllRows<any>("kobuks_units")]);
+  const [kobuksResult, kobuksProducerResult, kobuksProductionResult] = await Promise.allSettled([
+    fetchAllRows<any>("kobuks_units"),
+    fetchAllRows<any>("kobuks_producers"),
+    fetchAllRows<any>("kobuks_production"),
+  ]);
 
-  const kobuksRows = kobuksResult.status === "fulfilled" ? kobuksResult.value.map((item) => fixRecordText(item)) : [];
+  const kobuksRawRows = kobuksResult.status === "fulfilled" ? kobuksResult.value.map((item) => fixRecordText(item)) : [];
+  const kobuksProducers = new Map(
+    (kobuksProducerResult.status === "fulfilled" ? kobuksProducerResult.value : []).map((item) => [String(item.tc_no), item]),
+  );
+  const kobuksProductionRows = kobuksProductionResult.status === "fulfilled" ? kobuksProductionResult.value : [];
+  const kobuksProductionByUnit = kobuksProductionRows.reduce((map, item) => {
+    const key = String(item.unit_no || "");
+    if (!key) return map;
+    map.set(key, [...(map.get(key) || []), item]);
+    return map;
+  }, new Map<string, any[]>());
+  const kobuksRows = kobuksRawRows.map((unit) =>
+    normalizeKobuksImportedUnit(
+      unit,
+      kobuksProducers.get(String(unit.producer_tc || unit.tc_no || "")),
+      kobuksProductionByUnit.get(String(unit.unit_no || "")) || [],
+    ),
+  );
   const syncedTaskRows = taskRows.filter(shouldUseTaskAsCbsSource);
-  const merged = [...kobuksRows, ...syncedTaskRows].map(normalizeLegacyUnit);
+  const merged = [...kobuksRows, ...syncedTaskRows.map(normalizeLegacyUnit)];
   const units = mergeCbsUnits(localUnits, merged);
   return units.length ? units : SAMPLE_UNITS;
 }

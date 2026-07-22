@@ -29,10 +29,36 @@ type KobuksSearchPayload = {
   }[];
 };
 
+function uniqueFilledValues(values: unknown[]) {
+  const seen = new Set<string>();
+
+  return values
+    .map((value) => String(value || "").trim())
+    .filter((value) => {
+      if (!value || seen.has(value)) {
+        return false;
+      }
+
+      seen.add(value);
+      return true;
+    });
+}
+
+function getProductionCropText(production?: any) {
+  const rows = Array.isArray(production) ? production : production ? [production] : [];
+  return uniqueFilledValues(rows.map((row) => row?.crop_name || row?.detected_crop || row?.crop)).join(", ");
+}
+
 function normalizeRecord(unit: any, producer?: any, production?: any): KobuksUnitRecord {
+  const productionCrop = getProductionCropText(production);
+
   return fixRecordText({
     tc_no: producer?.tc_no || unit?.producer_tc || unit?.tc_no,
-    producer_name: producer?.full_name || unit?.producer_name || unit?.full_name || "-",
+    producer_name:
+      producer?.full_name ||
+      unit?.producer_name ||
+      unit?.full_name ||
+      (unit?.producer_tc ? `İşletme ${unit.producer_tc}` : "-"),
     phone: producer?.phone || unit?.phone || "",
     city: producer?.city || unit?.city || unit?.province,
     district_name: producer?.district || unit?.district_name || unit?.district,
@@ -41,7 +67,7 @@ function normalizeRecord(unit: any, producer?: any, production?: any): KobuksUni
     ada_no: unit?.ada_no,
     parcel_no: unit?.parcel_no,
     greenhouse_area: String(unit?.greenhouse_area || unit?.area_m2 || ""),
-    detected_crop: production?.crop_name || unit?.detected_crop || unit?.crop_name || unit?.crop,
+    detected_crop: productionCrop || unit?.detected_crop || unit?.crop_name || unit?.crop,
     registration_status: unit?.registration_status || "Aktif",
     latitude: unit?.latitude || unit?.unit_latitude,
     longitude: unit?.longitude || unit?.unit_longitude,
@@ -56,8 +82,8 @@ async function enrichUnit(unit: any): Promise<KobuksUnitRecord> {
       ? supabase.from("kobuks_producers").select("*").eq("tc_no", unit.producer_tc).maybeSingle()
       : Promise.resolve({ data: null }),
     unit?.unit_no
-      ? supabase.from("kobuks_production").select("*").eq("unit_no", unit.unit_no).maybeSingle()
-      : Promise.resolve({ data: null }),
+      ? supabase.from("kobuks_production").select("*").eq("unit_no", unit.unit_no).limit(20)
+      : Promise.resolve({ data: [] }),
   ]);
 
   return normalizeRecord(unit, producerResult.data, productionResult.data);

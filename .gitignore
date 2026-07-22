@@ -32,6 +32,7 @@ ios/build/
 # Temporary and inspection folders
 .apk-inspect-v23/
 .codex-docx-render/
+database/generated/
 
 # Logs
 npm-debug.log*
