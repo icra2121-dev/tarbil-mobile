@@ -413,6 +413,7 @@ export default function TaskDetailScreen() {
   const currentStatus = getTaskStatus(task);
   const workflowKind = getTaskWorkflowKind(task);
   const workflowLabel = workflowLabels[workflowKind];
+  const workflowMeta = startModeOptions[workflowKind];
   const inspectionStarted = isTaskStarted(task);
   const inspectionCancelled = isTaskCancelled(task);
   const reportReady = isTaskCompleted(task);
@@ -1004,17 +1005,36 @@ export default function TaskDetailScreen() {
   return (
     <View style={styles.root}>
       <ScrollView style={styles.screen} contentContainerStyle={styles.content} contentInsetAdjustmentBehavior="automatic">
-      <View style={styles.header}>
-        <Pressable onPress={goBackToPreviousScreen} style={styles.backButton}>
-          <MaterialCommunityIcons name="chevron-left" color="white" size={24} />
-        </Pressable>
-        <View style={styles.headerText}>
-          <Text style={styles.kicker}>{workflowLabel}</Text>
-          <Text style={styles.title}>{fixMojibake(task.detected_crop || "Denetim")}</Text>
-          <Text style={styles.subtitle}>{fixMojibake(task.unit_no || "-")} - {fixMojibake(task.producer_name || "-")}</Text>
+        {!management ? (
+          <View
+            style={[
+              styles.workflowTypeBanner,
+              { borderColor: workflowMeta.color, backgroundColor: `${workflowMeta.color}22` },
+            ]}
+          >
+            <View style={styles.workflowTypeIcon}>
+              <MaterialCommunityIcons name={workflowMeta.icon} color={workflowMeta.color} size={22} />
+            </View>
+            <View style={styles.workflowTypeCopy}>
+              <Text style={styles.workflowTypeCaption}>Görev türü</Text>
+              <Text style={[styles.workflowTypeText, { color: workflowMeta.color }]}>
+                {workflowMeta.title}
+              </Text>
+            </View>
+          </View>
+        ) : null}
+
+        <View style={styles.header}>
+          <Pressable onPress={goBackToPreviousScreen} style={styles.backButton}>
+            <MaterialCommunityIcons name="chevron-left" color="white" size={24} />
+          </Pressable>
+          <View style={styles.headerText}>
+            <Text style={styles.kicker}>{workflowLabel}</Text>
+            <Text style={styles.title}>{fixMojibake(task.detected_crop || "Denetim")}</Text>
+            <Text style={styles.subtitle}>{fixMojibake(task.unit_no || "-")} - {fixMojibake(task.producer_name || "-")}</Text>
+          </View>
+          <Text style={styles.statusPill}>{fixMojibake(currentStatus || "Bekliyor")}</Text>
         </View>
-        <Text style={styles.statusPill}>{fixMojibake(currentStatus || "Bekliyor")}</Text>
-      </View>
 
       <KobuksRecordSummary task={task} />
 
@@ -1129,11 +1149,11 @@ export default function TaskDetailScreen() {
           {!inspectionStarted && !management ? (
             <View style={styles.startModeGrid}>
               <Pressable
-                onPress={() => startInspection(startModeOptions[workflowKind].key)}
-                style={[styles.startModeButton, { backgroundColor: startModeOptions[workflowKind].color }]}
+                onPress={() => startInspection(workflowMeta.key)}
+                style={[styles.startModeButton, { backgroundColor: workflowMeta.color }]}
               >
-                <MaterialCommunityIcons name={startModeOptions[workflowKind].icon} color="white" size={19} />
-                <Text style={styles.buttonText}>{startModeOptions[workflowKind].title}</Text>
+                <MaterialCommunityIcons name={workflowMeta.icon} color="white" size={19} />
+                <Text style={styles.buttonText}>{workflowMeta.title}</Text>
               </Pressable>
             </View>
           ) : null}
@@ -1617,6 +1637,26 @@ const styles = StyleSheet.create({
   content: { paddingHorizontal: 16, paddingTop: 18, paddingBottom: 104, gap: 14 },
   center: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#020617" },
   loadingText: { color: "#cbd5e1", marginTop: 10, fontWeight: "700" },
+  workflowTypeBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  workflowTypeIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 8,
+    backgroundColor: "#020617",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  workflowTypeCopy: { flex: 1 },
+  workflowTypeCaption: { color: "#cbd5e1", fontSize: 11, fontWeight: "800" },
+  workflowTypeText: { fontSize: 16, fontWeight: "900", marginTop: 1 },
   header: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", gap: 10 },
   backButton: {
     width: 40,
