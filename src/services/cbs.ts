@@ -12,8 +12,11 @@ export type MapPoint = {
 
 export type CbsUnit = {
   id: string;
+  origin?: "qgis" | "kobuks" | "greenhouse" | "task" | "manual";
   cbsUnitId?: string;
+  cbsStorageId?: string;
   greenhouseUnitId?: string;
+  parcelOnly?: boolean;
   producerId?: string;
   producerName: string;
   producerTc: string;
@@ -35,9 +38,37 @@ export type CbsUnit = {
   greenhousePolygon: MapPoint[];
 };
 
+export type CbsParcel = {
+  id: string;
+  tkgmParcelId?: string;
+  city: string;
+  district: string;
+  village: string;
+  adaNo: string;
+  parcelNo: string;
+  source: string;
+  sourceAccuracy?: string;
+  polygon: MapPoint[];
+};
+
 export type CbsLookupHint = {
   label: string;
   value: string;
+};
+
+export type LoadCbsUnitsOptions = {
+  includeKobuks?: boolean;
+  kobuksQuery?: string;
+  kobuksLimit?: number;
+};
+
+export type SaveCbsPolygonOptions = {
+  taskId?: string | number | null;
+  taskDescription?: string | null;
+};
+
+export type StartInspectionOptions = {
+  unassigned?: boolean;
 };
 
 export const AKSU_SOLAK_QGIS_PROJECT = {
@@ -374,6 +405,17 @@ function hasLookupValue(value: unknown) {
   return Boolean(text && text !== "-" && text.toLocaleLowerCase("tr-TR") !== "null");
 }
 
+function isDatabaseUuid(value: unknown) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    String(value || "").trim(),
+  );
+}
+
+function isDatabaseRecordId(value: unknown) {
+  const normalized = String(value || "").trim();
+  return isDatabaseUuid(normalized) || /^[1-9]\d*$/.test(normalized);
+}
+
 function joinLookupParts(values: unknown[], separator = " / ") {
   return values.map((value) => fixMojibake(value).trim()).filter(hasLookupValue).join(separator);
 }
@@ -436,14 +478,177 @@ export function getQgisStatusLabel(unit: CbsUnit) {
   return "Çok iyi";
 }
 
-async function fetchAllRows<T>(table: string, pageSize = 1000): Promise<T[]> {
+const KOBUKS_UNIT_SELECT = [
+  "id",
+  "created_at",
+  "producer_tc",
+  "unit_no",
+  "ada_no",
+  "parcel_no",
+  "greenhouse_area",
+  "parcel_area",
+  "heating_type",
+  "energy_type",
+  "structure_type",
+  "cover_material",
+].join(",");
+
+const KOBUKS_MAP_UNIT_SELECT = [
+  KOBUKS_UNIT_SELECT,
+  "cbs_unit_id",
+  "greenhouse_unit_id",
+  "parcel_polygon",
+  "greenhouse_polygon",
+  "latitude",
+  "longitude",
+].join(",");
+
+const KOBUKS_PRODUCER_SELECT = [
+  "id",
+  "tc_no",
+  "full_name",
+  "phone",
+  "city",
+  "district",
+  "village",
+].join(",");
+
+const KOBUKS_PRODUCTION_SELECT = [
+  "unit_no",
+  "crop_name",
+].join(",");
+
+const DEFAULT_KOBUKS_SEARCH_LIMIT = 120;
+const CBS_REQUEST_TIMEOUT_MS = 8000;
+
+async function runCbsQuery<T = any>(query: any, timeoutMs = CBS_REQUEST_TIMEOUT_MS): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await query.abortSignal(controller.signal);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function normalizeSearchToken(value: unknown) {
+  return fixMojibake(value).trim();
+}
+
+function getSearchDigits(value: unknown) {
+  return normalizeSearchToken(value).replace(/\D/g, "");
+}
+
+function splitParcelSearch(value: unknown) {
+  const parts = normalizeSearchToken(value)
+    .replace("\\", "/")
+    .split("/")
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  return parts.length >= 2 ? { adaNo: parts[0], parcelNo: parts[1] } : null;
+}
+
+function getStableRowKey(row: any) {
+  return String(row?.id || row?.unit_no || `${row?.producer_tc || ""}-${row?.ada_no || ""}-${row?.parcel_no || ""}`);
+}
+
+async function addKobuksRowsFromQuery(
+  rowsByKey: Map<string, any>,
+  query: any,
+  limit: number,
+) {
+  const result: any = await runCbsQuery(query.limit(limit));
+
+  if (result.error) {
+    throw result.error;
+  }
+
+  (result.data || []).forEach((row: any) => {
+    rowsByKey.set(getStableRowKey(row), row);
+  });
+}
+
+async function fetchKobuksRowsBySearch(query: string, limit: number) {
+  const trimmed = normalizeSearchToken(query);
+  const digits = getSearchDigits(trimmed);
+  const parcelSearch = splitParcelSearch(trimmed);
+  const rowsByKey = new Map<string, any>();
+
+  if (!trimmed) {
+    return [];
+  }
+
+  if (digits.length >= 10) {
+    await addKobuksRowsFromQuery(
+      rowsByKey,
+      supabase.from("kobuks_units").select(KOBUKS_UNIT_SELECT).eq("producer_tc", digits),
+      limit,
+    );
+  }
+
+  await addKobuksRowsFromQuery(
+    rowsByKey,
+    supabase.from("kobuks_units").select(KOBUKS_UNIT_SELECT).eq("unit_no", trimmed),
+    limit,
+  );
+
+  if (parcelSearch) {
+    await addKobuksRowsFromQuery(
+      rowsByKey,
+      supabase
+        .from("kobuks_units")
+        .select(KOBUKS_UNIT_SELECT)
+        .eq("ada_no", parcelSearch.adaNo)
+        .eq("parcel_no", parcelSearch.parcelNo),
+      limit,
+    );
+  } else if (trimmed.length >= 2 && rowsByKey.size < limit) {
+    await addKobuksRowsFromQuery(
+      rowsByKey,
+      supabase
+        .from("kobuks_units")
+        .select(KOBUKS_UNIT_SELECT)
+        .or(`unit_no.ilike.%${trimmed}%,ada_no.eq.${trimmed},parcel_no.eq.${trimmed}`),
+      limit,
+    ).catch(() => undefined);
+  }
+
+  if (trimmed.length >= 3 && rowsByKey.size < limit) {
+    const producerResult: any = await runCbsQuery(
+      supabase
+        .from("kobuks_producers")
+        .select(KOBUKS_PRODUCER_SELECT)
+        .ilike("full_name", `%${trimmed}%`)
+        .limit(25),
+    );
+    const producerTcs = uniqueFilledValues((producerResult.data || []).map((item: any) => item.tc_no));
+
+    if (producerTcs.length) {
+      await addKobuksRowsFromQuery(
+        rowsByKey,
+        supabase.from("kobuks_units").select(KOBUKS_UNIT_SELECT).in("producer_tc", producerTcs),
+        Math.max(10, limit - rowsByKey.size),
+      );
+    }
+  }
+
+  return [...rowsByKey.values()].slice(0, limit);
+}
+
+async function fetchAllRows<T>(table: string, pageSize = 1000, select = "*"): Promise<T[]> {
   const rows: T[] = [];
 
   for (let from = 0; ; from += pageSize) {
     const to = from + pageSize - 1;
-    const result = await supabase.from(table).select("*").range(from, to);
+    const result: any = await runCbsQuery(supabase.from(table).select(select).range(from, to));
 
     if (result.error) {
+      if (select !== "*") {
+        return fetchAllRows<T>(table, pageSize, "*");
+      }
+
       throw result.error;
     }
 
@@ -456,6 +661,123 @@ async function fetchAllRows<T>(table: string, pageSize = 1000): Promise<T[]> {
   }
 }
 
+async function fetchRowsByValues<T>(
+  table: string,
+  column: string,
+  values: unknown[],
+  select = "*",
+  batchSize = 200,
+): Promise<T[]> {
+  const normalizedValues = [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))];
+  const rows: T[] = [];
+
+  for (let index = 0; index < normalizedValues.length; index += batchSize) {
+    const result: any = await runCbsQuery(
+      supabase.from(table).select(select).in(column, normalizedValues.slice(index, index + batchSize)),
+      12000,
+    );
+
+    if (result.error) {
+      throw result.error;
+    }
+
+    rows.push(...(result.data || []));
+  }
+
+  return rows;
+}
+
+const TKGM_PARCEL_SELECT = "id,tkgm_parcel_id,city,district,village,ada_no,parcel_no,parcel_polygon,latitude,longitude,source,source_accuracy";
+
+function normalizeTkgmParcelRows(rows: any[]): CbsParcel[] {
+  const parcels = new Map<string, CbsParcel>();
+
+  rows.forEach((row) => {
+    const source = String(row?.source || "").trim().toLocaleLowerCase("tr-TR");
+
+    if (
+      !hasStoredPolygonValue(row?.parcel_polygon) ||
+      !["tkgm", "tkgm_authorized", "megsis_authorized", "tkgm_public_approx"].includes(source)
+    ) {
+      return;
+    }
+
+    const center = {
+      latitude: toNumber(row.latitude, ANTALYA_REGION.latitude),
+      longitude: toNumber(row.longitude, ANTALYA_REGION.longitude),
+    };
+    const polygon = parsePolygon(row.parcel_polygon, center);
+    const key = String(
+      row.tkgm_parcel_id ||
+        [
+          fixMojibake(row.city).trim().toLocaleLowerCase("tr-TR"),
+          fixMojibake(row.district).trim().toLocaleLowerCase("tr-TR"),
+          fixMojibake(row.village).trim().toLocaleLowerCase("tr-TR"),
+          row.ada_no,
+          row.parcel_no,
+        ].join("|"),
+    );
+
+    parcels.set(key, {
+      id: String(row.id || key),
+      tkgmParcelId: row.tkgm_parcel_id ? String(row.tkgm_parcel_id) : undefined,
+      city: fixMojibake(row.city || "-"),
+      district: fixMojibake(row.district || "-"),
+      village: fixMojibake(row.village || "-"),
+      adaNo: String(row.ada_no || "-"),
+      parcelNo: String(row.parcel_no || "-"),
+      source,
+      sourceAccuracy: row.source_accuracy ? String(row.source_accuracy) : undefined,
+      polygon,
+    });
+  });
+
+  return [...parcels.values()];
+}
+
+export async function loadTkgmParcels(): Promise<CbsParcel[]> {
+  const rows = await fetchAllRows<any>("cbs_units", 1000, TKGM_PARCEL_SELECT).catch(async (error) => {
+    if (!isCbsStorageSchemaError(error)) {
+      throw error;
+    }
+
+    return fetchAllRows<any>("cbs_units");
+  });
+
+  return normalizeTkgmParcelRows(rows);
+}
+
+export async function loadTkgmParcelsForRegion(
+  region: { latitude: number; longitude: number; latitudeDelta: number; longitudeDelta: number },
+  limit = 2500,
+): Promise<CbsParcel[]> {
+  const latitudePadding = Math.max(region.latitudeDelta * 0.12, 0.002);
+  const longitudePadding = Math.max(region.longitudeDelta * 0.12, 0.002);
+  const minLatitude = region.latitude - region.latitudeDelta / 2 - latitudePadding;
+  const maxLatitude = region.latitude + region.latitudeDelta / 2 + latitudePadding;
+  const minLongitude = region.longitude - region.longitudeDelta / 2 - longitudePadding;
+  const maxLongitude = region.longitude + region.longitudeDelta / 2 + longitudePadding;
+  const result: any = await runCbsQuery(
+    supabase
+      .from("cbs_units")
+      .select(TKGM_PARCEL_SELECT)
+      .in("source", ["tkgm", "tkgm_authorized", "megsis_authorized", "tkgm_public_approx"])
+      .gte("latitude", minLatitude)
+      .lte("latitude", maxLatitude)
+      .gte("longitude", minLongitude)
+      .lte("longitude", maxLongitude)
+      .order("id", { ascending: true })
+      .limit(limit),
+    12000,
+  );
+
+  if (result.error) {
+    throw result.error;
+  }
+
+  return normalizeTkgmParcelRows(result.data || []);
+}
+
 function normalizeLegacyUnit(raw: any): CbsUnit {
   const center = {
     latitude: toNumber(raw.latitude ?? raw.lat ?? raw.unit_latitude, ANTALYA_REGION.latitude),
@@ -465,6 +787,9 @@ function normalizeLegacyUnit(raw: any): CbsUnit {
   return {
     id: String(raw.id ?? raw.unit_no ?? raw.task_id ?? Date.now()),
     cbsUnitId: raw.cbs_unit_id ? String(raw.cbs_unit_id) : undefined,
+    cbsStorageId: raw.cbs_storage_id ?? raw.cbs_unit_id
+      ? String(raw.cbs_storage_id ?? raw.cbs_unit_id)
+      : undefined,
     greenhouseUnitId: raw.greenhouse_unit_id ? String(raw.greenhouse_unit_id) : undefined,
     producerName: fixMojibake(raw.producer_name ?? raw.full_name ?? raw.name ?? "Üretici"),
     producerTc: String(raw.tc_no ?? raw.producer_tc ?? raw.producer_identity ?? "-"),
@@ -493,9 +818,11 @@ function normalizeGreenhouseUnit(raw: any, parcel: any, producer: any, crop: any
 
   return {
     id: String(raw.id ?? raw.unit_no),
-    cbsUnitId: raw.cbs_unit_id,
-    greenhouseUnitId: raw.id,
-    producerId: raw.producer_id,
+    origin: "greenhouse",
+    cbsUnitId: raw.cbs_unit_id ? String(raw.cbs_unit_id) : undefined,
+    cbsStorageId: raw.cbs_unit_id ? String(raw.cbs_unit_id) : undefined,
+    greenhouseUnitId: raw.id ? String(raw.id) : undefined,
+    producerId: raw.producer_id ? String(raw.producer_id) : undefined,
     producerName: fixMojibake(producer?.full_name ?? raw.producer_name ?? "Üretici"),
     producerTc: String(producer?.tc_no ?? raw.producer_tc ?? "-"),
     producerPhone: String(producer?.phone ?? raw.phone ?? ""),
@@ -514,8 +841,18 @@ function normalizeGreenhouseUnit(raw: any, parcel: any, producer: any, crop: any
   };
 }
 
-function getUnitMergeKey(unit: CbsUnit) {
-  return String(unit.greenhouseUnitId || unit.cbsUnitId || unit.unitNo || unit.id);
+function getUnitMergeAliases(unit: CbsUnit) {
+  const aliases = [
+    unit.greenhouseUnitId ? `greenhouse:${unit.greenhouseUnitId}` : "",
+    hasLookupValue(unit.unitNo) ? `unit:${fixMojibake(unit.unitNo).trim().toLocaleLowerCase("tr-TR")}` : "",
+    unit.id ? `id:${unit.id}` : "",
+  ].filter(Boolean);
+
+  if (!aliases.length && unit.cbsUnitId) {
+    aliases.push(`cbs:${unit.cbsUnitId}`);
+  }
+
+  return aliases;
 }
 
 function mergeCbsUnit(existing: CbsUnit, incoming: CbsUnit): CbsUnit {
@@ -532,17 +869,23 @@ function mergeCbsUnit(existing: CbsUnit, incoming: CbsUnit): CbsUnit {
   };
 }
 
-function mergeCbsUnits(...groups: CbsUnit[][]) {
-  const map = new Map<string, CbsUnit>();
+export function mergeCbsUnits(...groups: CbsUnit[][]) {
+  const unitsByKey = new Map<string, CbsUnit>();
+  const aliasToKey = new Map<string, string>();
+  let sequence = 0;
 
   groups.flat().forEach((unit) => {
-    const key = getUnitMergeKey(unit);
-    const existing = map.get(key);
+    const aliases = getUnitMergeAliases(unit);
+    const existingKey = aliases.map((alias) => aliasToKey.get(alias)).find(Boolean);
+    const key = existingKey || `unit-${sequence++}`;
+    const existing = unitsByKey.get(key);
+    const merged = existing ? mergeCbsUnit(existing, unit) : unit;
 
-    map.set(key, existing ? mergeCbsUnit(existing, unit) : unit);
+    unitsByKey.set(key, merged);
+    getUnitMergeAliases(merged).forEach((alias) => aliasToKey.set(alias, key));
   });
 
-  return [...map.values()];
+  return [...unitsByKey.values()];
 }
 
 function uniqueFilledValues(values: unknown[]) {
@@ -584,10 +927,11 @@ function getParcelStorageKey(values: {
 }
 
 function normalizeKobuksImportedUnit(raw: any, producer: any, productionRows: any[], cbsParcel?: any): CbsUnit {
-  const savedUnitPolygon = raw.greenhouse_polygon || raw.unit_polygon || cbsParcel?.greenhouse_polygon || cbsParcel?.unit_polygon;
+  const savedUnitPolygon = raw.greenhouse_polygon || raw.unit_polygon;
   const savedParcelPolygon = raw.parcel_polygon || cbsParcel?.parcel_polygon || cbsParcel?.polygon;
 
-  return normalizeLegacyUnit({
+  return {
+    ...normalizeLegacyUnit({
     ...raw,
     tc_no: producer?.tc_no || raw.producer_tc || raw.tc_no,
     producer_name: producer?.full_name || raw.producer_name || raw.full_name,
@@ -595,16 +939,126 @@ function normalizeKobuksImportedUnit(raw: any, producer: any, productionRows: an
     city: producer?.city || raw.city || cbsParcel?.city || raw.province || raw.il,
     district: producer?.district || raw.district_name || raw.district || cbsParcel?.district || raw.ilce,
     village: producer?.village || raw.village || cbsParcel?.village || raw.neighborhood || raw.mahalle,
+    producer_id: producer?.id || raw.producer_id,
     cbs_unit_id: raw.cbs_unit_id || cbsParcel?.id,
+    cbs_storage_id: raw.cbs_storage_id || cbsParcel?.id,
     crop_name: getProductionCropText(productionRows) || raw.detected_crop || raw.crop_name || raw.crop,
     parcel_polygon: savedParcelPolygon,
-    greenhouse_polygon: savedUnitPolygon || savedParcelPolygon,
+    greenhouse_polygon: savedUnitPolygon,
+    }),
+    origin: "kobuks",
+  };
+}
+
+export async function loadKobuksMapUnitsForParcels(parcels: CbsParcel[]) {
+  if (!parcels.length) {
+    return [];
+  }
+
+  const storedCbsParcels = parcels.map((parcel) => ({
+    id: parcel.id,
+    city: parcel.city,
+    district: parcel.district,
+    village: parcel.village,
+    ada_no: parcel.adaNo,
+    parcel_no: parcel.parcelNo,
+    parcel_polygon: parcel.polygon,
+  }));
+  const rawByKey = new Map<string, any>();
+  const parcelIds = storedCbsParcels.map((parcel) => parcel.id).filter(isDatabaseRecordId);
+  const adaNos = uniqueFilledValues(storedCbsParcels.map((parcel) => parcel.ada_no));
+
+  if (parcelIds.length) {
+    await fetchRowsByValues<any>("kobuks_units", "cbs_unit_id", parcelIds, KOBUKS_MAP_UNIT_SELECT)
+      .then((rows) => rows.forEach((row) => rawByKey.set(getStableRowKey(row), fixRecordText(row))))
+      .catch(() => undefined);
+  }
+
+  if (adaNos.length) {
+    await fetchRowsByValues<any>("kobuks_units", "ada_no", adaNos, KOBUKS_MAP_UNIT_SELECT)
+      .then((rows) => rows.forEach((row) => rawByKey.set(getStableRowKey(row), fixRecordText(row))))
+      .catch(() => undefined);
+  }
+
+  const storedCbsParcelByKey = new Map(storedCbsParcels.map((item) => [getParcelStorageKey(item), item]));
+  const storedCbsParcelById = new Map(storedCbsParcels.map((item) => [String(item.id), item]));
+  const linkedRows = [...rawByKey.values()].filter(
+    (row) => storedCbsParcelById.has(String(row.cbs_unit_id || "")) || storedCbsParcelByKey.has(getParcelStorageKey(row)),
+  );
+
+  if (!linkedRows.length) {
+    return [];
+  }
+
+  const producerTcs = uniqueFilledValues(linkedRows.map((row) => row.producer_tc || row.tc_no));
+  const unitNos = uniqueFilledValues(linkedRows.map((row) => row.unit_no));
+  const [producerResult, productionResult] = await Promise.allSettled([
+    producerTcs.length
+      ? runCbsQuery(supabase.from("kobuks_producers").select(KOBUKS_PRODUCER_SELECT).in("tc_no", producerTcs), 12000)
+      : Promise.resolve({ data: [] }),
+    unitNos.length
+      ? runCbsQuery(supabase.from("kobuks_production").select(KOBUKS_PRODUCTION_SELECT).in("unit_no", unitNos), 12000)
+      : Promise.resolve({ data: [] }),
+  ]);
+  const producers = new Map(
+    ((producerResult.status === "fulfilled" ? producerResult.value : { data: [] }) as any).data?.map((item: any) => [String(item.tc_no), item]) || [],
+  );
+  const productionByUnit = (((productionResult.status === "fulfilled" ? productionResult.value : { data: [] }) as any).data || []).reduce(
+    (map: Map<string, any[]>, item: any) => {
+      const key = String(item.unit_no || "");
+      if (key) map.set(key, [...(map.get(key) || []), item]);
+      return map;
+    },
+    new Map<string, any[]>(),
+  );
+
+  return linkedRows.map((row) => {
+    const parcel = storedCbsParcelById.get(String(row.cbs_unit_id || "")) || storedCbsParcelByKey.get(getParcelStorageKey(row));
+    return normalizeKobuksImportedUnit(
+      row,
+      producers.get(String(row.producer_tc || row.tc_no || "")),
+      productionByUnit.get(String(row.unit_no || "")) || [],
+      parcel,
+    );
   });
 }
 
-function compactStoragePayload(payload: Record<string, unknown>) {
-  return Object.fromEntries(
-    Object.entries(payload).filter(([, value]) => value !== undefined && value !== ""),
+async function loadKobuksSearchUnits(query: string, storedCbsParcels: any[], limit: number) {
+  const rawRows = (await fetchKobuksRowsBySearch(query, limit)).map((item) => fixRecordText(item));
+
+  if (!rawRows.length) {
+    return [];
+  }
+
+  const producerTcs = uniqueFilledValues(rawRows.map((row) => row.producer_tc || row.tc_no));
+  const unitNos = uniqueFilledValues(rawRows.map((row) => row.unit_no));
+  const [producerResult, productionResult] = await Promise.allSettled([
+    producerTcs.length
+      ? supabase.from("kobuks_producers").select(KOBUKS_PRODUCER_SELECT).in("tc_no", producerTcs)
+      : Promise.resolve({ data: [] }),
+    unitNos.length
+      ? supabase.from("kobuks_production").select(KOBUKS_PRODUCTION_SELECT).in("unit_no", unitNos)
+      : Promise.resolve({ data: [] }),
+  ]);
+  const producers = new Map(
+    (producerResult.status === "fulfilled" ? producerResult.value.data || [] : []).map((item: any) => [String(item.tc_no), item]),
+  );
+  const productionRows = productionResult.status === "fulfilled" ? productionResult.value.data || [] : [];
+  const productionByUnit = productionRows.reduce((map: Map<string, any[]>, item: any) => {
+    const key = String(item.unit_no || "");
+    if (!key) return map;
+    map.set(key, [...(map.get(key) || []), item]);
+    return map;
+  }, new Map<string, any[]>());
+  const storedCbsParcelByKey = new Map(storedCbsParcels.map((item) => [getParcelStorageKey(item), item]));
+
+  return rawRows.map((unit) =>
+    normalizeKobuksImportedUnit(
+      unit,
+      producers.get(String(unit.producer_tc || unit.tc_no || "")),
+      productionByUnit.get(String(unit.unit_no || "")) || [],
+      storedCbsParcelByKey.get(getParcelStorageKey(unit)),
+    ),
   );
 }
 
@@ -624,189 +1078,311 @@ function isCbsStorageSchemaError(error: any) {
   );
 }
 
-async function mutateWithStorageFallback(
-  payloads: Record<string, unknown>[],
-  mutate: (payload: Record<string, unknown>) => any,
+function isMissingPolygonSyncRpc(error: any) {
+  const text = [error?.code, error?.message, error?.details, error?.hint]
+    .filter(Boolean)
+    .join(" ")
+    .toLocaleLowerCase("tr-TR");
+
+  return (
+    text.includes("sync_cbs_polygon") ||
+    text.includes("pgrst202") ||
+    (text.includes("could not find") && text.includes("function"))
+  );
+}
+
+async function saveCbsPolygonWithLegacySchema(
+  unit: CbsUnit,
+  normalizedParcelPolygon: MapPoint[],
+  normalizedPolygon: MapPoint[],
+  center: MapPoint,
+  area: number,
+  options: SaveCbsPolygonOptions,
 ) {
-  let lastError: any = null;
+  const existingCbsId = String(unit.cbsStorageId || "").trim();
+  let cbsRecord: any = null;
 
-  for (const payload of payloads.map(compactStoragePayload)) {
-    const result = await mutate(payload);
+  if (existingCbsId) {
+    const existingResult: any = await runCbsQuery(
+      supabase.from("cbs_units").select("id").eq("id", existingCbsId).maybeSingle(),
+      12000,
+    );
 
-    if (!result.error) {
-      return { saved: true, data: result.data };
+    if (existingResult.error) {
+      throw existingResult.error;
     }
 
-    lastError = result.error;
+    cbsRecord = existingResult.data;
+  }
 
-    if (!isCbsStorageSchemaError(result.error)) {
-      break;
+  if (!cbsRecord && hasLookupValue(unit.cbsUnitId)) {
+    const existingResult: any = await runCbsQuery(
+      supabase.from("cbs_units").select("id").eq("tkgm_parcel_id", unit.cbsUnitId).maybeSingle(),
+      12000,
+    );
+
+    if (existingResult.error && !isCbsStorageSchemaError(existingResult.error)) {
+      throw existingResult.error;
+    }
+
+    cbsRecord = existingResult.data || null;
+  }
+
+  const parcelPayload = {
+    tkgm_parcel_id: hasLookupValue(unit.cbsUnitId) ? unit.cbsUnitId : null,
+    city: unit.city,
+    district: unit.district,
+    village: unit.village,
+    ada_no: unit.adaNo,
+    parcel_no: unit.parcelNo,
+    parcel_polygon: normalizedParcelPolygon.length >= 3 ? normalizedParcelPolygon : null,
+    latitude: center.latitude,
+    longitude: center.longitude,
+    source: "manual_cbs_polygon",
+    source_accuracy: "field_drawn_greenhouse",
+    updated_at: new Date().toISOString(),
+  };
+  let cbsResult: any;
+
+  if (cbsRecord?.id) {
+    cbsResult = await runCbsQuery(
+      supabase.from("cbs_units").update(parcelPayload).eq("id", cbsRecord.id).select("id").single(),
+      12000,
+    );
+  } else {
+    cbsResult = await runCbsQuery(
+      supabase
+        .from("cbs_units")
+        .insert({
+          ...parcelPayload,
+          unit_no: unit.unitNo,
+          greenhouse_polygon: normalizedPolygon,
+          greenhouse_area: area,
+        })
+        .select("id")
+        .single(),
+      12000,
+    );
+  }
+
+  if (cbsResult.error) {
+    throw cbsResult.error;
+  }
+
+  const cbsUnitId = String(cbsResult.data?.id || cbsRecord?.id || "");
+  if (!cbsUnitId) {
+    throw new Error("CBS parsel kaydı oluşturulamadı.");
+  }
+
+  const greenhouseResult: any = await runCbsQuery(
+    supabase
+      .from("greenhouse_units")
+      .upsert(
+        {
+          cbs_unit_id: cbsUnitId,
+          producer_id: unit.producerId || null,
+          unit_no: unit.unitNo,
+          registration_no: hasLookupValue(unit.registrationNo) ? unit.registrationNo : null,
+          greenhouse_area: area,
+          parcel_polygon: normalizedParcelPolygon.length >= 3 ? normalizedParcelPolygon : null,
+          greenhouse_polygon: normalizedPolygon,
+          latitude: center.latitude,
+          longitude: center.longitude,
+          status: "active",
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "unit_no" },
+      )
+      .select("id")
+      .single(),
+    12000,
+  );
+
+  if (greenhouseResult.error) {
+    throw greenhouseResult.error;
+  }
+
+  const greenhouseUnitId = String(greenhouseResult.data?.id || "");
+  const numericTaskId = isDatabaseRecordId(options.taskId) ? Number(options.taskId) : null;
+  let inspectionId: string | undefined;
+
+  if (numericTaskId) {
+    const taskPayload: Record<string, unknown> = {
+      cbs_unit_id: cbsUnitId,
+      greenhouse_unit_id: greenhouseUnitId || null,
+      parcel_polygon: normalizedParcelPolygon.length >= 3 ? normalizedParcelPolygon : null,
+      greenhouse_polygon: normalizedPolygon,
+      latitude: center.latitude,
+      longitude: center.longitude,
+    };
+
+    if (options.taskDescription) {
+      taskPayload.description = options.taskDescription;
+    }
+
+    let taskResult: any = await runCbsQuery(
+      supabase.from("tasks").update(taskPayload).eq("id", numericTaskId).select("*").single(),
+      12000,
+    );
+
+    if (taskResult.error && isCbsStorageSchemaError(taskResult.error)) {
+      const { cbs_unit_id: _cbsUnitId, greenhouse_unit_id: _greenhouseUnitId, ...legacyTaskPayload } = taskPayload;
+      taskResult = await runCbsQuery(
+        supabase.from("tasks").update(legacyTaskPayload).eq("id", numericTaskId).select("*").single(),
+        12000,
+      );
+    }
+
+    if (taskResult.error) {
+      throw taskResult.error;
+    }
+
+    if (taskResult.data?.inspection_id) {
+      inspectionId = String(taskResult.data.inspection_id);
+      const inspectionResult: any = await runCbsQuery(
+        supabase
+          .from("inspection_history")
+          .update({
+            greenhouse_unit_id: greenhouseUnitId || null,
+            producer_id: unit.producerId || null,
+            unit_no: unit.unitNo,
+            latitude: center.latitude,
+            longitude: center.longitude,
+          })
+          .eq("id", inspectionId),
+        12000,
+      );
+
+      if (inspectionResult.error) {
+        throw inspectionResult.error;
+      }
+    } else {
+      const inspectionResult: any = await runCbsQuery(
+        supabase
+          .from("inspection_history")
+          .insert({
+            greenhouse_unit_id: greenhouseUnitId || null,
+            producer_id: unit.producerId || null,
+            task_id: numericTaskId,
+            unit_no: unit.unitNo,
+            status: "Sahada",
+            latitude: center.latitude,
+            longitude: center.longitude,
+          })
+          .select("id")
+          .single(),
+        12000,
+      );
+
+      if (inspectionResult.error) {
+        throw inspectionResult.error;
+      }
+
+      inspectionId = inspectionResult.data?.id ? String(inspectionResult.data.id) : undefined;
+
+      if (inspectionId) {
+        const linkResult: any = await runCbsQuery(
+          supabase.from("tasks").update({ inspection_id: inspectionId }).eq("id", numericTaskId),
+          12000,
+        );
+
+        if (linkResult.error && !isCbsStorageSchemaError(linkResult.error)) {
+          throw linkResult.error;
+        }
+      }
     }
   }
 
-  return { saved: false, error: lastError };
+  return {
+    saved: true,
+    targets: [
+      "cbs_units",
+      "greenhouse_units",
+      ...(numericTaskId ? ["tasks", "inspection_history"] : []),
+    ],
+    ids: {
+      cbsUnitId,
+      greenhouseUnitId: greenhouseUnitId || undefined,
+      inspectionId,
+    },
+    kobuksLinked: false,
+    errors: [],
+  };
 }
 
-async function findStoredCbsParcelId(unit: CbsUnit) {
-  if (unit.cbsUnitId) {
-    return unit.cbsUnitId;
-  }
-
-  if (!hasLookupValue(unit.adaNo) || !hasLookupValue(unit.parcelNo)) {
-    return "";
-  }
-
-  let query = supabase
-    .from("cbs_units")
-    .select("id")
-    .eq("ada_no", unit.adaNo)
-    .eq("parcel_no", unit.parcelNo)
-    .limit(10);
-
-  if (hasLookupValue(unit.district)) {
-    query = query.eq("district", unit.district);
-  }
-
-  if (hasLookupValue(unit.village)) {
-    query = query.eq("village", unit.village);
-  }
-
-  const result = await query;
-
-  if (result.error) {
-    throw result.error;
-  }
-
-  return String(result.data?.[0]?.id || "");
-}
-
-export async function saveCbsUnitPolygon(unit: CbsUnit, greenhousePolygon: MapPoint[]) {
+export async function saveCbsUnitPolygon(
+  unit: CbsUnit,
+  greenhousePolygon: MapPoint[],
+  options: SaveCbsPolygonOptions = {},
+) {
   const normalizedPolygon = greenhousePolygon.map((point, index) => ({
+    corner: index + 1,
+    latitude: Number(point.latitude.toFixed(8)),
+    longitude: Number(point.longitude.toFixed(8)),
+  }));
+  const normalizedParcelPolygon = unit.parcelPolygon.map((point, index) => ({
     corner: index + 1,
     latitude: Number(point.latitude.toFixed(8)),
     longitude: Number(point.longitude.toFixed(8)),
   }));
   const center = getCenter(normalizedPolygon);
   const area = Math.round(calculatePolygonArea(normalizedPolygon));
-  const updatedAt = new Date().toISOString();
-  const savedTargets: string[] = [];
-  const errors: string[] = [];
-  const fullPayload = {
-    city: unit.city,
-    district: unit.district,
-    village: unit.village,
-    ada_no: unit.adaNo,
-    parcel_no: unit.parcelNo,
-    unit_no: unit.unitNo,
-    source: "manual_cbs_polygon",
-    parcel_polygon: normalizedPolygon,
-    greenhouse_polygon: normalizedPolygon,
-    latitude: center.latitude,
-    longitude: center.longitude,
-    greenhouse_area: area,
-    updated_at: updatedAt,
-  };
-  const parcelPayloads = [
-    fullPayload,
-    {
-      city: unit.city,
-      district: unit.district,
-      village: unit.village,
-      ada_no: unit.adaNo,
-      parcel_no: unit.parcelNo,
-      source: "manual_cbs_polygon",
-      parcel_polygon: normalizedPolygon,
-      updated_at: updatedAt,
-    },
-    {
-      city: unit.city,
-      district: unit.district,
-      village: unit.village,
-      ada_no: unit.adaNo,
-      parcel_no: unit.parcelNo,
-      parcel_polygon: normalizedPolygon,
-    },
-  ];
+  const numericTaskId = isDatabaseRecordId(options.taskId) ? Number(options.taskId) : null;
+  const numericCbsId = isDatabaseRecordId(unit.cbsStorageId)
+    ? Number(unit.cbsStorageId)
+    : isDatabaseRecordId(unit.cbsUnitId)
+      ? Number(unit.cbsUnitId)
+      : null;
+  const numericProducerId = isDatabaseRecordId(unit.producerId) ? Number(unit.producerId) : null;
+  const result: any = await runCbsQuery(
+    supabase.rpc("sync_cbs_polygon", {
+      p_task_id: numericTaskId,
+      p_cbs_unit_id: numericCbsId,
+      p_tkgm_parcel_id: numericCbsId ? null : unit.cbsUnitId || null,
+      p_city: unit.city,
+      p_district: unit.district,
+      p_village: unit.village,
+      p_ada_no: unit.adaNo,
+      p_parcel_no: unit.parcelNo,
+      p_unit_no: unit.unitNo,
+      p_registration_no: hasLookupValue(unit.registrationNo) ? unit.registrationNo : null,
+      p_producer_id: numericProducerId,
+      p_parcel_polygon: normalizedParcelPolygon.length >= 3 ? normalizedParcelPolygon : null,
+      p_greenhouse_polygon: normalizedPolygon,
+      p_latitude: center.latitude,
+      p_longitude: center.longitude,
+      p_greenhouse_area: area,
+      p_task_description: options.taskDescription || null,
+    }),
+    15000,
+  );
 
-  try {
-    const cbsParcelId = await findStoredCbsParcelId(unit).catch(() => "");
-    const cbsResult = cbsParcelId
-      ? await mutateWithStorageFallback(parcelPayloads, (payload) =>
-          supabase.from("cbs_units").update(payload).eq("id", cbsParcelId).select("id"),
-        )
-      : await mutateWithStorageFallback(parcelPayloads, (payload) =>
-          supabase.from("cbs_units").insert(payload).select("id"),
-        );
-
-    if (cbsResult.saved) {
-      savedTargets.push("cbs_units");
-    } else if (cbsResult.error) {
-      errors.push(`cbs_units: ${cbsResult.error.message || cbsResult.error}`);
-    }
-  } catch (error: any) {
-    errors.push(`cbs_units: ${error?.message || error}`);
-  }
-
-  const unitPayloads = [
-    {
-      greenhouse_polygon: normalizedPolygon,
-      parcel_polygon: normalizedPolygon,
-      latitude: center.latitude,
-      longitude: center.longitude,
-      greenhouse_area: area,
-      updated_at: updatedAt,
-    },
-    {
-      greenhouse_polygon: normalizedPolygon,
-      latitude: center.latitude,
-      longitude: center.longitude,
-      greenhouse_area: area,
-    },
-  ];
-
-  if (unit.greenhouseUnitId || hasLookupValue(unit.unitNo)) {
-    try {
-      const greenhouseResult = await mutateWithStorageFallback(unitPayloads, (payload) => {
-        const query = supabase.from("greenhouse_units").update(payload);
-        return unit.greenhouseUnitId
-          ? query.eq("id", unit.greenhouseUnitId).select("id")
-          : query.eq("unit_no", unit.unitNo).select("id");
-      });
-
-      if (greenhouseResult.saved) {
-        savedTargets.push("greenhouse_units");
-      } else if (greenhouseResult.error && !isCbsStorageSchemaError(greenhouseResult.error)) {
-        errors.push(`greenhouse_units: ${greenhouseResult.error.message || greenhouseResult.error}`);
-      }
-    } catch (error: any) {
-      if (!isCbsStorageSchemaError(error)) {
-        errors.push(`greenhouse_units: ${error?.message || error}`);
-      }
-    }
-  }
-
-  if (hasLookupValue(unit.unitNo)) {
-    try {
-      const kobuksResult = await mutateWithStorageFallback(unitPayloads, (payload) =>
-        supabase.from("kobuks_units").update(payload).eq("unit_no", unit.unitNo).select("id"),
+  if (result.error) {
+    if (isMissingPolygonSyncRpc(result.error)) {
+      return saveCbsPolygonWithLegacySchema(
+        unit,
+        normalizedParcelPolygon,
+        normalizedPolygon,
+        center,
+        area,
+        options,
       );
-
-      if (kobuksResult.saved) {
-        savedTargets.push("kobuks_units");
-      } else if (kobuksResult.error && !isCbsStorageSchemaError(kobuksResult.error)) {
-        errors.push(`kobuks_units: ${kobuksResult.error.message || kobuksResult.error}`);
-      }
-    } catch (error: any) {
-      if (!isCbsStorageSchemaError(error)) {
-        errors.push(`kobuks_units: ${error?.message || error}`);
-      }
     }
+
+    throw result.error;
   }
 
+  const data = result.data || {};
   return {
-    saved: savedTargets.length > 0,
-    targets: savedTargets,
-    errors,
+    saved: true,
+    targets: Array.isArray(data.targets) ? data.targets : ["cbs_units", "greenhouse_units"],
+    ids: {
+      cbsUnitId: data.cbs_unit_id ? String(data.cbs_unit_id) : undefined,
+      greenhouseUnitId: data.greenhouse_unit_id ? String(data.greenhouse_unit_id) : undefined,
+      inspectionId: data.inspection_id ? String(data.inspection_id) : undefined,
+    },
+    kobuksLinked: Boolean(data.kobuks_linked),
+    errors: [],
   };
 }
 
@@ -840,12 +1416,13 @@ function shouldUseTaskAsCbsSource(task: any) {
   return hasStoredPolygonValue(task?.greenhouse_polygon ?? task?.greenhousePolygon ?? task?.unit_polygon);
 }
 
-export async function loadCbsUnits(): Promise<CbsUnit[]> {
+export async function loadCbsUnits(options: LoadCbsUnitsOptions = {}): Promise<CbsUnit[]> {
   const localUnits = AKSU_SOLAK_UNITS;
-  const [greenhouseResult, parcelResult, producerResult, cropResult, taskResult] = await Promise.allSettled([
+  const includeKobuks = Boolean(options.kobuksQuery) || options.includeKobuks === true;
+  const kobuksLimit = options.kobuksLimit || DEFAULT_KOBUKS_SEARCH_LIMIT;
+  const [greenhouseResult, producerResult, cropResult, taskResult] = await Promise.allSettled([
     fetchAllRows<any>("greenhouse_units"),
-    fetchAllRows<any>("cbs_units"),
-    fetchAllRows<any>("producers"),
+    fetchAllRows<any>("kobuks_producers"),
     fetchAllRows<any>("unit_crops"),
     fetchAllRows<any>("tasks"),
   ]);
@@ -853,9 +1430,20 @@ export async function loadCbsUnits(): Promise<CbsUnit[]> {
   const greenhouses = greenhouseResult.status === "fulfilled" ? greenhouseResult.value : [];
   const taskRows = taskResult.status === "fulfilled" ? taskResult.value.map((item) => fixRecordText(item)) : [];
   const syncedTaskUnits = taskRows.filter(shouldUseTaskAsCbsSource).map(normalizeLegacyUnit);
+  const storedCbsParcels = await fetchRowsByValues<any>(
+    "cbs_units",
+    "id",
+    greenhouses.map((item) => item.cbs_unit_id),
+  )
+    .then((rows) => rows.map((item) => fixRecordText(item)))
+    .catch(() => []);
+  const searchKobuksRows =
+    includeKobuks && options.kobuksQuery
+      ? await loadKobuksSearchUnits(options.kobuksQuery, storedCbsParcels, kobuksLimit).catch(() => [])
+      : [];
 
   if (greenhouses.length) {
-    const parcels = new Map((parcelResult.status === "fulfilled" ? parcelResult.value : []).map((item) => [String(item.id), item]));
+    const parcels = new Map(storedCbsParcels.map((item) => [String(item.id), item]));
     const producers = new Map((producerResult.status === "fulfilled" ? producerResult.value : []).map((item) => [String(item.id), item]));
     const crops = cropResult.status === "fulfilled" ? cropResult.value : [];
 
@@ -869,41 +1457,19 @@ export async function loadCbsUnits(): Promise<CbsUnit[]> {
           crops.find((crop) => String(crop.greenhouse_unit_id) === String(unit.id)),
         ),
       ),
+      searchKobuksRows,
       syncedTaskUnits,
     );
   }
 
-  const [kobuksResult, kobuksProducerResult, kobuksProductionResult] = await Promise.allSettled([
-    fetchAllRows<any>("kobuks_units"),
-    fetchAllRows<any>("kobuks_producers"),
-    fetchAllRows<any>("kobuks_production"),
-  ]);
-
-  const kobuksRawRows = kobuksResult.status === "fulfilled" ? kobuksResult.value.map((item) => fixRecordText(item)) : [];
-  const kobuksProducers = new Map(
-    (kobuksProducerResult.status === "fulfilled" ? kobuksProducerResult.value : []).map((item) => [String(item.tc_no), item]),
-  );
-  const kobuksProductionRows = kobuksProductionResult.status === "fulfilled" ? kobuksProductionResult.value : [];
-  const storedCbsParcels = parcelResult.status === "fulfilled" ? parcelResult.value.map((item) => fixRecordText(item)) : [];
-  const storedCbsParcelByKey = new Map(storedCbsParcels.map((item) => [getParcelStorageKey(item), item]));
-  const kobuksProductionByUnit = kobuksProductionRows.reduce((map, item) => {
-    const key = String(item.unit_no || "");
-    if (!key) return map;
-    map.set(key, [...(map.get(key) || []), item]);
-    return map;
-  }, new Map<string, any[]>());
-  const kobuksRows = kobuksRawRows.map((unit) =>
-    normalizeKobuksImportedUnit(
-      unit,
-      kobuksProducers.get(String(unit.producer_tc || unit.tc_no || "")),
-      kobuksProductionByUnit.get(String(unit.unit_no || "")) || [],
-      storedCbsParcelByKey.get(getParcelStorageKey(unit)),
-    ),
-  );
   const syncedTaskRows = taskRows.filter(shouldUseTaskAsCbsSource);
-  const merged = [...kobuksRows, ...syncedTaskRows.map(normalizeLegacyUnit)];
+  const merged = [...searchKobuksRows, ...syncedTaskRows.map(normalizeLegacyUnit)];
   const units = mergeCbsUnits(localUnits, merged);
   return units.length ? units : SAMPLE_UNITS;
+}
+
+export function getBundledCbsUnits(): CbsUnit[] {
+  return AKSU_SOLAK_UNITS.length ? AKSU_SOLAK_UNITS : SAMPLE_UNITS;
 }
 
 function getWorkflowStartResult(workflowKind: TaskWorkflowKind) {
@@ -970,7 +1536,9 @@ async function insertTaskWithSchemaFallback(payload: Record<string, unknown>) {
     }
 
     triedSignatures.add(signature);
-    const result = await supabase.from("tasks").insert(attempt).select().single();
+    const result: any = await runCbsQuery(
+      supabase.from("tasks").insert(attempt).select().single(),
+    );
 
     if (!result.error) {
       return result;
@@ -986,16 +1554,29 @@ async function insertTaskWithSchemaFallback(payload: Record<string, unknown>) {
   return lastResult;
 }
 
-export async function startInspectionFromUnit(unit: CbsUnit, initialStatus = "Bekliyor", workflowKind: TaskWorkflowKind = "inspection") {
+export async function startInspectionFromUnit(
+  unit: CbsUnit,
+  initialStatus = "Bekliyor",
+  workflowKind: TaskWorkflowKind = "inspection",
+  options: StartInspectionOptions = {},
+) {
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  const center = getCenter(unit.greenhousePolygon);
-  const existingTaskResult = await supabase
-    .from("tasks")
-    .select("*")
-    .eq("unit_no", unit.unitNo)
-    .order("created_at", { ascending: false });
+  const center = getCenter(
+    unit.greenhousePolygon.length >= 3 ? unit.greenhousePolygon : unit.parcelPolygon,
+  );
+  const existingTaskResult: any = await runCbsQuery(
+    supabase
+      .from("tasks")
+      .select("*")
+      .eq("unit_no", unit.unitNo)
+      .order("created_at", { ascending: false }),
+  );
+
+  if (existingTaskResult.error) {
+    throw existingTaskResult.error;
+  }
   const existingTask = (existingTaskResult.data || []).find(
     (task) => getTaskWorkflowKind(task) === workflowKind && !isTaskCancelled(task),
   );
@@ -1008,29 +1589,39 @@ export async function startInspectionFromUnit(unit: CbsUnit, initialStatus = "Be
     };
   }
 
-  const profileResult = user?.id
-    ? await supabase.from("profiles").select("full_name,email").eq("id", user.id).maybeSingle()
+  const profileResult: any = user?.id
+    ? await runCbsQuery(
+        supabase.from("profiles").select("full_name,email").eq("id", user.id).maybeSingle(),
+      )
     : { data: null };
   const assignedName = String(profileResult.data?.full_name || profileResult.data?.email || user?.email || "Saha denetçisi");
 
-  const inspectionResult = await supabase
-    .from("inspection_history")
-    .insert({
-      greenhouse_unit_id: unit.greenhouseUnitId || null,
-      producer_id: unit.producerId || null,
-      inspector_user_id: user?.id || null,
-      unit_no: unit.unitNo,
-      status: initialStatus,
-      latitude: center.latitude,
-      longitude: center.longitude,
-    })
-    .select()
-    .single();
+  const inspectionResult: any = await runCbsQuery(
+    supabase
+      .from("inspection_history")
+      .insert({
+        greenhouse_unit_id: isDatabaseRecordId(unit.greenhouseUnitId)
+          ? unit.greenhouseUnitId
+          : null,
+        producer_id: isDatabaseRecordId(unit.producerId) ? unit.producerId : null,
+        inspector_user_id: options.unassigned ? null : user?.id || null,
+        unit_no: unit.unitNo,
+        status: initialStatus,
+        latitude: center.latitude,
+        longitude: center.longitude,
+      })
+      .select()
+      .single(),
+  );
+
+  if (inspectionResult.error) {
+    throw inspectionResult.error;
+  }
 
   const taskPayload = {
     user_id: user?.id,
-    assigned_to: user?.id || null,
-    assigned_name: assignedName,
+    assigned_to: options.unassigned ? null : user?.id || null,
+    assigned_name: options.unassigned ? null : assignedName,
     tc_no: unit.producerTc,
     producer_name: unit.producerName,
     phone: unit.producerPhone || null,
@@ -1054,10 +1645,12 @@ export async function startInspectionFromUnit(unit: CbsUnit, initialStatus = "Be
   const taskResult = await insertTaskWithSchemaFallback({
     ...taskPayload,
     parcel_polygon: unit.parcelPolygon,
-    greenhouse_polygon: unit.greenhousePolygon,
+    greenhouse_polygon: unit.parcelOnly ? [] : unit.greenhousePolygon,
     inspection_id: inspectionResult.data?.id || null,
-    greenhouse_unit_id: unit.greenhouseUnitId || null,
-    cbs_unit_id: unit.cbsUnitId || null,
+    greenhouse_unit_id: isDatabaseRecordId(unit.greenhouseUnitId)
+      ? unit.greenhouseUnitId
+      : null,
+    cbs_unit_id: isDatabaseRecordId(unit.cbsStorageId) ? unit.cbsStorageId : null,
   });
 
   if (taskResult.error) {

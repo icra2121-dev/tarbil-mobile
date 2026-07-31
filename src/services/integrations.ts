@@ -7,6 +7,7 @@ export type IntegrationStatus = {
 };
 
 const gatewayUrl = process.env.EXPO_PUBLIC_INTEGRATION_API_URL?.replace(/\/$/, "");
+const INTEGRATION_REQUEST_TIMEOUT_MS = 10000;
 
 export function getIntegrationStatus(): IntegrationStatus {
   if (gatewayUrl) {
@@ -34,14 +35,33 @@ export async function integrationFetch<T>(path: string, options: RequestInit = {
     data: { session },
   } = await supabase.auth.getSession();
 
-  const response = await fetch(`${gatewayUrl}${path}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
-      ...options.headers,
-    },
-  });
+  const controller = new AbortController();
+  const abortFromCaller = () => controller.abort();
+  const timer = setTimeout(() => controller.abort(), INTEGRATION_REQUEST_TIMEOUT_MS);
+  options.signal?.addEventListener("abort", abortFromCaller);
+
+  let response: Response;
+
+  try {
+    response = await fetch(`${gatewayUrl}${path}`, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        ...options.headers,
+      },
+    });
+  } catch (error: any) {
+    if (controller.signal.aborted) {
+      throw new Error("Entegrasyon servisi zaman aşımına uğradı.");
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener("abort", abortFromCaller);
+  }
 
   if (!response.ok) {
     const errorBody = await response.json().catch(() => null);

@@ -1,6 +1,7 @@
 import { supabase } from "../lib/supabase";
+import { startInspectionFromUnit, type CbsUnit } from "./cbs";
 import { sendPushToUser } from "./sendPush";
-import { taskStatuses, validateTaskForAssignment } from "./workflowGuard";
+import { taskStatuses, validateTaskForAssignment, type TaskWorkflowKind } from "./workflowGuard";
 
 export async function assignTaskToInspector(taskId: unknown, inspector: any) {
   if (!inspector?.id) {
@@ -40,9 +41,13 @@ export async function assignTaskToInspector(taskId: unknown, inspector: any) {
 
   const title = "Yeni denetim görevi";
   const body = `${updateResult.data?.unit_no || "Ünite"} için yeni saha denetimi atandı.`;
+  const tokenResult = inspector.push_token
+    ? { data: { push_token: inspector.push_token } }
+    : await supabase.from("profiles").select("push_token").eq("id", inspector.id).maybeSingle();
+  const pushToken = tokenResult.data?.push_token || null;
 
   try {
-    await sendPushToUser(inspector.push_token || null, title, body, {
+    await sendPushToUser(pushToken, title, body, {
       data: {
         taskId,
         unitNo: updateResult.data?.unit_no || null,
@@ -56,4 +61,41 @@ export async function assignTaskToInspector(taskId: unknown, inspector: any) {
   }
 
   return updateResult;
+}
+
+export async function assignUnitsToInspector(
+  units: CbsUnit[],
+  inspector: any,
+  workflowKind: TaskWorkflowKind,
+) {
+  const assigned: { unit: CbsUnit; task: any }[] = [];
+  const failed: { unit: CbsUnit; error: string }[] = [];
+
+  for (const unit of units) {
+    try {
+      const taskResult = await startInspectionFromUnit(unit, "Bekliyor", workflowKind, {
+        unassigned: true,
+      });
+      const task = taskResult.task;
+
+      if (!task?.id) {
+        throw new Error("Görev kaydı oluşturulamadı.");
+      }
+
+      if (String(task.assigned_to || "") === String(inspector?.id || "")) {
+        assigned.push({ unit, task });
+        continue;
+      }
+
+      const assignmentResult = await assignTaskToInspector(task.id, inspector);
+      assigned.push({ unit, task: assignmentResult.data });
+    } catch (error: any) {
+      failed.push({
+        unit,
+        error: error?.message || String(error),
+      });
+    }
+  }
+
+  return { assigned, failed };
 }

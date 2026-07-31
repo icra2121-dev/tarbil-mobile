@@ -5,7 +5,7 @@ import { Alert, FlatList, Pressable, ScrollView, StyleSheet, Text, TextInput, Vi
 
 import { RoleGate } from "../../components/RoleGate";
 import { getMyProfile } from "../../services/profile";
-import { deleteTaskById, getTasks } from "../../services/tasks";
+import { deleteTaskById, getTasks, reactivateCancelledTask } from "../../services/tasks";
 import { getTaskStatus, getTaskWorkflowKind, isTaskCancelled, isTaskCompleted, isTaskStarted } from "../../services/workflowGuard";
 
 const STATUS_COLOR: Record<string, string> = {
@@ -27,6 +27,7 @@ const FILTERS = [
   { key: "all", label: "Tümü" },
   { key: "pending", label: "Atama" },
   { key: "field", label: "Sahada" },
+  { key: "cancelled", label: "İptal" },
 ];
 
 const workflowTypeLabels = {
@@ -42,7 +43,11 @@ const workflowTypeStyles = {
 };
 
 function getStatusGroup(task: any) {
-  if (isTaskCompleted(task) || isTaskCancelled(task)) {
+  if (isTaskCancelled(task)) {
+    return "cancelled";
+  }
+
+  if (isTaskCompleted(task)) {
     return "done";
   }
 
@@ -79,6 +84,7 @@ function TasksContent() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [profile, setProfile] = useState<any>(null);
   const [deletingId, setDeletingId] = useState("");
+  const [reactivatingId, setReactivatingId] = useState("");
 
   useFocusEffect(
     useCallback(() => {
@@ -89,7 +95,7 @@ function TasksContent() {
           return;
         }
 
-        setTasks((result.data || []).filter((task: any) => !isTaskCompleted(task) && !isTaskCancelled(task)));
+        setTasks((result.data || []).filter((task: any) => !isTaskCompleted(task)));
         setProfile(profileResult);
       });
 
@@ -160,6 +166,30 @@ function TasksContent() {
     ]);
   }
 
+  function reactivateTask(task: any) {
+    const taskId = String(task?.id || "");
+
+    Alert.alert("Görevi yeniden aktifleştir", "İptal kaydı korunacak; görev yeniden atama veya saha akışına dönecek.", [
+      { text: "Vazgeç", style: "cancel" },
+      {
+        text: "Aktifleştir",
+        onPress: async () => {
+          setReactivatingId(taskId);
+
+          try {
+            const nextTask = await reactivateCancelledTask(taskId);
+            setTasks((current) => current.map((item) => (String(item.id) === taskId ? nextTask : item)));
+            Alert.alert("Aktifleştirildi", "Görev yeniden aktif duruma alındı.");
+          } catch (error: any) {
+            Alert.alert("Aktifleştirilemedi", error?.message || "Görev yeniden aktif edilemedi.");
+          } finally {
+            setReactivatingId("");
+          }
+        },
+      },
+    ]);
+  }
+
   return (
     <View style={styles.screen}>
       <View style={styles.header}>
@@ -205,7 +235,13 @@ function TasksContent() {
           </View>
         }
         renderItem={({ item }) => (
-          <TaskCard task={item} deleting={deletingId === String(item.id)} onDelete={deleteCancelledTask} />
+          <TaskCard
+            task={item}
+            deleting={deletingId === String(item.id)}
+            reactivating={reactivatingId === String(item.id)}
+            onDelete={deleteCancelledTask}
+            onReactivate={reactivateTask}
+          />
         )}
       />
     </View>
@@ -215,11 +251,15 @@ function TasksContent() {
 function TaskCard({
   task,
   deleting,
+  reactivating,
   onDelete,
+  onReactivate,
 }: {
   task: any;
   deleting: boolean;
+  reactivating: boolean;
   onDelete: (task: any) => void;
+  onReactivate: (task: any) => void;
 }) {
   const status = getTaskStatus(task);
   const workflowKind = getTaskWorkflowKind(task);
@@ -273,17 +313,30 @@ function TaskCard({
       ) : null}
 
       {isTaskCancelled(task) ? (
-        <Pressable
-          onPress={(event) => {
-            event.stopPropagation();
-            onDelete(task);
-          }}
-          style={[styles.deleteButton, deleting && styles.dimmedButton]}
-          disabled={deleting}
-        >
-          <MaterialCommunityIcons name="trash-can-outline" color="white" size={18} />
-          <Text style={styles.deleteButtonText}>{deleting ? "Siliniyor..." : "Sil"}</Text>
-        </Pressable>
+        <View style={styles.cancelledActions}>
+          <Pressable
+            onPress={(event) => {
+              event.stopPropagation();
+              onReactivate(task);
+            }}
+            style={[styles.reactivateButton, reactivating && styles.dimmedButton]}
+            disabled={reactivating}
+          >
+            <MaterialCommunityIcons name="restore" color="white" size={18} />
+            <Text style={styles.deleteButtonText}>{reactivating ? "Aktifleştiriliyor..." : "Aktifleştir"}</Text>
+          </Pressable>
+          <Pressable
+            onPress={(event) => {
+              event.stopPropagation();
+              onDelete(task);
+            }}
+            style={[styles.deleteButton, deleting && styles.dimmedButton]}
+            disabled={deleting}
+          >
+            <MaterialCommunityIcons name="trash-can-outline" color="white" size={18} />
+            <Text style={styles.deleteButtonText}>{deleting ? "Siliniyor..." : "Sil"}</Text>
+          </Pressable>
+        </View>
       ) : null}
     </Pressable>
   );
@@ -448,7 +501,22 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     lineHeight: 18,
   },
+  cancelledActions: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  reactivateButton: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: 8,
+    backgroundColor: "#166534",
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 7,
+  },
   deleteButton: {
+    flex: 1,
     minHeight: 42,
     borderRadius: 8,
     backgroundColor: "#991b1b",

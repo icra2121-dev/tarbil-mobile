@@ -191,7 +191,10 @@ export function validateTaskForAssignment(task: any) {
     missing.push("Ünite no seçilmeli.");
   }
 
-  if (!String(task?.ada_no || "").trim() || !String(task?.parcel_no || "").trim()) {
+  if (
+    workflowKind === "inspection" &&
+    (!String(task?.ada_no || "").trim() || !String(task?.parcel_no || "").trim())
+  ) {
     missing.push("Ada/parsel bilgisi CBS veya KOBÜKS kaydından gelmeli.");
   }
 

@@ -41,7 +41,7 @@ export default function TabsLayout() {
         name="cbs"
         options={{
           title: "CBS",
-          href: profile ? "/cbs" : null,
+          href: "/cbs",
           tabBarIcon: ({ color, size }) => (
             <MaterialCommunityIcons name="map-marker-radius-outline" color={color} size={size} />
           ),

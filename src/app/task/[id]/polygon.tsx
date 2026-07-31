@@ -28,6 +28,18 @@ function singleParam(value: unknown) {
   return String(Array.isArray(value) ? value[0] : value || "");
 }
 
+function getTaskLookupQuery(task: any) {
+  const unitNo = String(task?.unit_no || "").trim();
+  const tcNo = String(task?.tc_no || task?.producer_tc || "").trim();
+  const adaNo = String(task?.ada_no || "").trim();
+  const parcelNo = String(task?.parcel_no || "").trim();
+
+  if (unitNo) return unitNo;
+  if (tcNo) return tcNo;
+  if (adaNo && parcelNo) return `${adaNo}/${parcelNo}`;
+  return "";
+}
+
 function normalizePoint(point: MapPoint, index: number) {
   return {
     corner: index + 1,
@@ -165,10 +177,41 @@ function findTaskUnit(task: any, units: CbsUnit[]) {
   });
 }
 
+function buildTaskCbsUnit(task: any, greenhousePolygon: MapPoint[]): CbsUnit {
+  const center = getCenter(greenhousePolygon);
+  const taskId = singleParam(task?.id || task?.task_id);
+  const unitNo = hasMeaningfulUnitValue(task?.unit_no)
+    ? String(task.unit_no)
+    : `SAHA-${taskId.slice(0, 8) || Date.now()}`;
+
+  return {
+    id: `task-${taskId || unitNo}`,
+    cbsUnitId: task?.cbs_unit_id ? String(task.cbs_unit_id) : undefined,
+    greenhouseUnitId: task?.greenhouse_unit_id ? String(task.greenhouse_unit_id) : undefined,
+    producerName: String(task?.producer_name || "Sahada tespit edilen sera"),
+    producerTc: String(task?.tc_no || task?.producer_tc || "-"),
+    producerPhone: String(task?.phone || ""),
+    registrationNo: String(task?.registration_no || unitNo),
+    unitNo,
+    city: String(task?.city || "-"),
+    district: String(task?.district_name || task?.district || "-"),
+    village: String(task?.village || "-"),
+    adaNo: String(task?.ada_no || "-"),
+    parcelNo: String(task?.parcel_no || "-"),
+    crop: String(task?.detected_crop || "-"),
+    greenhouseArea: calculatePolygonArea(greenhousePolygon),
+    status: "inceleme",
+    parcelPolygon: task?.parcel_polygon
+      ? parsePolygon(task.parcel_polygon, center)
+      : greenhousePolygon,
+    greenhousePolygon,
+  };
+}
+
 function getReferenceCenter(task: any, units: CbsUnit[], points: MapPoint[]) {
   const taskUnit = findTaskUnit(task, units);
 
-  if (taskUnit?.greenhousePolygon?.length) {
+  if (taskUnit?.greenhousePolygon?.length && !isDefaultCbsFallbackPolygon(taskUnit.greenhousePolygon)) {
     return getCenter(taskUnit.greenhousePolygon);
   }
 
@@ -256,18 +299,6 @@ function parseDescriptionPolygon(description: unknown): MapPoint[] {
       return { latitude, longitude };
     })
     .filter((point): point is MapPoint => Boolean(point));
-}
-
-function getPolygonFallbackPayload(description: unknown, points: MapPoint[]) {
-  const polygonCenter = getCenter(points);
-  const area = Math.round(calculatePolygonArea(points));
-
-  return {
-    latitude: polygonCenter.latitude,
-    longitude: polygonCenter.longitude,
-    greenhouse_area: String(area),
-    description: mergePolygonDescription(description, points),
-  };
 }
 
 function getDeleteFallbackPayload(description: unknown) {
@@ -363,13 +394,16 @@ export default function TaskPolygonScreen() {
   const [layers, setLayers] = useState<Record<LayerKey, boolean>>(() => createDefaultLayerState());
   const taskUnit = useMemo(() => (task ? findTaskUnit(task, units) || null : null), [task, units]);
   const referenceCenter = useMemo(
-    () => (taskUnit?.greenhousePolygon?.length ? getCenter(taskUnit.greenhousePolygon) : getReferenceCenter(task, units, points)),
+    () =>
+      taskUnit?.greenhousePolygon?.length && !isDefaultCbsFallbackPolygon(taskUnit.greenhousePolygon)
+        ? getCenter(taskUnit.greenhousePolygon)
+        : getReferenceCenter(task, units, points),
     [points, task, taskUnit, units],
   );
   const polygonArea = useMemo(() => calculatePolygonArea(points), [points]);
 
   const center = useMemo(() => {
-    if (taskUnit?.greenhousePolygon?.length) {
+    if (taskUnit?.greenhousePolygon?.length && !isDefaultCbsFallbackPolygon(taskUnit.greenhousePolygon)) {
       return getCenter(taskUnit.greenhousePolygon);
     }
 
@@ -403,13 +437,20 @@ export default function TaskPolygonScreen() {
   useEffect(() => {
     let active = true;
 
-    Promise.all([getTaskById(taskId), loadCbsUnits().catch(() => [])])
-      .then(([result, cbsUnits]) => {
+    getTaskById(taskId)
+      .then(async (result) => {
         if (!active) {
           return;
         }
 
         const nextTask = result.data;
+        const lookupQuery = getTaskLookupQuery(nextTask);
+        const cbsUnits = await loadCbsUnits(lookupQuery ? { kobuksQuery: lookupQuery, kobuksLimit: 80 } : { includeKobuks: false }).catch(() => []);
+
+        if (!active) {
+          return;
+        }
+
         const initialPolygon = getSafeInitialPolygon(nextTask, cbsUnits);
 
         setTask(nextTask);
@@ -544,29 +585,30 @@ export default function TaskPolygonScreen() {
 
     try {
       const payload = getPolygonPayload(task?.description, points);
-      const fallbackPayload = getPolygonFallbackPayload(task?.description, points);
-      const result = await updateTaskOnlineOrQueue(taskId, payload, "CBS poligonu kaydı", fallbackPayload);
-      const cbsResult = taskUnit
-        ? await saveCbsUnitPolygon(taskUnit, payload.greenhouse_polygon as MapPoint[]).catch((error) => ({
-            saved: false,
-            targets: [],
-            errors: [error?.message || String(error)],
-          }))
-        : null;
+      const polygon = payload.greenhouse_polygon as MapPoint[];
+      const cbsUnit = taskUnit || buildTaskCbsUnit(task, polygon);
+      const cbsResult = await saveCbsUnitPolygon(cbsUnit, polygon, {
+        taskId,
+        taskDescription: String(payload.description || ""),
+      });
 
       setTask((current: any) => ({
         ...current,
-        ...(result.data || payload),
+        ...payload,
+        cbs_unit_id: cbsResult.ids.cbsUnitId || current?.cbs_unit_id,
+        greenhouse_unit_id: cbsResult.ids.greenhouseUnitId || current?.greenhouse_unit_id,
+        inspection_id: cbsResult.ids.inspectionId || current?.inspection_id,
       }));
       setPolygonAutoCorrected(false);
 
-      if (result.queued) {
-        Alert.alert("Sıraya alındı", "CBS poligonu internet geldiğinde sisteme aktarılacak.");
-      } else if (cbsResult?.saved) {
-        Alert.alert("Kaydedildi", `CBS poligonu göreve ve CBS kaydına aktarıldı: ${cbsResult.targets.join(", ")}`);
-      } else {
-        Alert.alert("Kaydedildi", "CBS poligonu göreve aktarıldı. CBS tablo yazma yetkisi veya poligon kolonu yoksa yalnızca görev kaydında tutulur.");
+      if (!cbsResult.saved) {
+        throw new Error(
+          cbsResult?.errors?.filter(Boolean).join(" | ") ||
+            "Poligon CBS tablosuna yazılamadı. Yetki ve veritabanı migrasyonunu kontrol edin.",
+        );
       }
+
+      Alert.alert("Kaydedildi", "CBS poligonu görev ve tüm ilgili CBS tablolarına aktarıldı.");
 
       router.back();
     } catch (error: any) {

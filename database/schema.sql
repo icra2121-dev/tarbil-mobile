@@ -15,13 +15,28 @@ create table if not exists producers (
 
 create table if not exists cbs_units (
   id uuid primary key default gen_random_uuid(),
+  tkgm_parcel_id text,
   city text,
   district text,
   village text,
   ada_no text,
   parcel_no text,
+  unit_no text,
   parcel_polygon jsonb,
+  greenhouse_polygon jsonb,
+  latitude numeric,
+  longitude numeric,
+  greenhouse_area numeric,
+  created_by uuid,
+  updated_by uuid,
   source text not null default 'cbs',
+  source_accuracy text,
+  source_srid integer,
+  source_updated_at timestamptz,
+  source_geometry jsonb,
+  geometry_hash text,
+  source_payload jsonb,
+  ingested_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -33,6 +48,7 @@ create table if not exists greenhouse_units (
   unit_no text unique not null,
   registration_no text,
   greenhouse_area numeric,
+  parcel_polygon jsonb,
   greenhouse_polygon jsonb,
   latitude numeric,
   longitude numeric,
@@ -152,6 +168,9 @@ create table if not exists notifications (
 );
 
 create index if not exists cbs_units_ada_parcel_idx on cbs_units(ada_no, parcel_no);
+create unique index if not exists cbs_units_tkgm_parcel_id_idx on cbs_units(tkgm_parcel_id) where tkgm_parcel_id is not null;
+create index if not exists cbs_units_source_idx on cbs_units(source);
+create index if not exists cbs_units_public_parcel_lookup_idx on cbs_units(city, district, village, ada_no, parcel_no);
 create index if not exists greenhouse_units_unit_no_idx on greenhouse_units(unit_no);
 create index if not exists unit_crops_greenhouse_unit_id_idx on unit_crops(greenhouse_unit_id);
 create index if not exists inspection_history_greenhouse_unit_id_idx on inspection_history(greenhouse_unit_id);
@@ -162,3 +181,65 @@ create index if not exists task_evidence_task_id_idx on task_evidence(task_id, c
 create index if not exists live_locations_updated_at_idx on live_locations(updated_at desc);
 create index if not exists kobuks_sync_queue_status_idx on kobuks_sync_queue(status, created_at desc);
 create index if not exists notifications_user_id_idx on notifications(user_id, read);
+
+create or replace function public.can_write_cbs()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.profiles
+    where id = auth.uid()
+      and role in ('admin', 'manager', 'inspector')
+  );
+$$;
+
+revoke all on function public.can_write_cbs() from public;
+grant execute on function public.can_write_cbs() to authenticated;
+
+alter table public.cbs_units enable row level security;
+alter table public.greenhouse_units enable row level security;
+
+grant select, insert, update on table public.cbs_units to authenticated;
+grant select, insert, update on table public.greenhouse_units to authenticated;
+
+drop policy if exists "authenticated can read cbs units" on public.cbs_units;
+create policy "authenticated can read cbs units"
+on public.cbs_units for select
+to authenticated
+using (true);
+
+drop policy if exists "cbs writers can insert cbs units" on public.cbs_units;
+create policy "cbs writers can insert cbs units"
+on public.cbs_units for insert
+to authenticated
+with check (public.can_write_cbs());
+
+drop policy if exists "cbs writers can update cbs units" on public.cbs_units;
+create policy "cbs writers can update cbs units"
+on public.cbs_units for update
+to authenticated
+using (public.can_write_cbs())
+with check (public.can_write_cbs());
+
+drop policy if exists "authenticated can read greenhouse units" on public.greenhouse_units;
+create policy "authenticated can read greenhouse units"
+on public.greenhouse_units for select
+to authenticated
+using (true);
+
+drop policy if exists "cbs writers can insert greenhouse units" on public.greenhouse_units;
+create policy "cbs writers can insert greenhouse units"
+on public.greenhouse_units for insert
+to authenticated
+with check (public.can_write_cbs());
+
+drop policy if exists "cbs writers can update greenhouse units" on public.greenhouse_units;
+create policy "cbs writers can update greenhouse units"
+on public.greenhouse_units for update
+to authenticated
+using (public.can_write_cbs())
+with check (public.can_write_cbs());

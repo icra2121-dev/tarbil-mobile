@@ -4,6 +4,8 @@ import { useState } from "react";
 import { Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 
 import { signIn } from "../services/auth";
+import { registerForPush } from "../services/push";
+import { savePushToken } from "../services/savePush";
 
 export default function LoginScreen() {
   const [email, setEmail] = useState("");
@@ -26,6 +28,9 @@ export default function LoginScreen() {
         return;
       }
 
+      registerForPush()
+        .then((token) => (token ? savePushToken(token) : undefined))
+        .catch(() => undefined);
       router.replace("/(tabs)");
     } finally {
       setLoading(false);

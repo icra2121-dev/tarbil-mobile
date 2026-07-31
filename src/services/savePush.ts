@@ -1,10 +1,6 @@
-import { supabase }
-from "../lib/supabase";
+import { supabase } from "../lib/supabase";
 
-export async function savePushToken(
-  token
-) {
-
+export async function savePushToken(token: string) {
   const {
     data:{
       user,
@@ -19,7 +15,7 @@ export async function savePushToken(
   await supabase
     .from("profiles")
     .update({
-      push_token:token,
+      push_token: token,
     })
-    .eq("id",user.id);
+    .eq("id", user.id);
 }

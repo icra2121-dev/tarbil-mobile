@@ -13,23 +13,29 @@ import {
   TextInput,
   View,
 } from "react-native";
-import MapView, { Callout, Marker, Polygon } from "react-native-maps";
+import MapView, { Callout, Marker, Polygon, type Region } from "react-native-maps";
 
-import { RoleGate } from "../../components/RoleGate";
 import {
   AKSU_SOLAK_QGIS_PROJECT,
   ANTALYA_REGION,
   CbsUnit,
+  type CbsParcel,
   STATUS_LABEL,
   buildFallbackPolygon,
+  getBundledCbsUnits,
   getCenter,
   getCbsLookupHints,
   getQgisStatusLabel,
+  loadKobuksMapUnitsForParcels,
   isDefaultCbsFallbackPolygon,
   loadCbsUnits,
+  loadTkgmParcelsForRegion,
+  mergeCbsUnits,
+  parsePolygon,
   startInspectionFromUnit,
 } from "../../services/cbs";
 import { canUseManagementScreens, getMyProfile } from "../../services/profile";
+import { getTaskById } from "../../services/taskDetail";
 import { getTasks } from "../../services/tasks";
 import { getLiveFieldLocations, type LiveFieldLocation } from "../../services/tracking";
 import { fixMojibake } from "../../utils/text";
@@ -41,8 +47,118 @@ import {
   type TaskWorkflowKind,
 } from "../../services/workflowGuard";
 
-const CACHE_KEY = "tarbil:cbs-units:v4";
+const CACHE_KEY = "tarbil:cbs-units:v5";
+const CACHE_UNIT_LIMIT = 300;
 const MAX_RENDERED_UNITS = 150;
+const MAX_VISIBLE_MAP_UNITS = 1200;
+
+function getPolygonSignature(points: { latitude: number; longitude: number }[]) {
+  return points
+    .map((point) => `${Number(point.latitude).toFixed(6)},${Number(point.longitude).toFixed(6)}`)
+    .sort()
+    .join("|");
+}
+
+function getKobuksParcelOverlayKey(unit: CbsUnit) {
+  const administrativeKey = [unit.city, unit.district, unit.village, unit.adaNo, unit.parcelNo]
+    .map((value) => fixMojibake(value || "").trim().toLocaleLowerCase("tr-TR"))
+    .join("|");
+
+  if (administrativeKey.replace(/\|/g, "")) {
+    return `parcel:${administrativeKey}`;
+  }
+
+  const storedParcelId = String(unit.cbsStorageId || unit.cbsUnitId || "").trim();
+
+  if (storedParcelId) {
+    return `cbs:${storedParcelId}`;
+  }
+
+  return `geometry:${getPolygonSignature(unit.parcelPolygon)}`;
+}
+
+function getUnitMapCenter(unit: CbsUnit) {
+  return getCenter(
+    unit.greenhousePolygon.length >= 3 ? unit.greenhousePolygon : unit.parcelPolygon,
+  );
+}
+
+function buildTkgmParcelUnit(parcel: CbsParcel): CbsUnit {
+  const parcelIdentity = String(
+    parcel.tkgmParcelId || `${parcel.adaNo}-${parcel.parcelNo}-${parcel.id.slice(0, 8)}`,
+  )
+    .replace(/[^0-9A-Za-z_-]/g, "-")
+    .slice(0, 48);
+
+  return {
+    id: `tkgm-parcel-${parcel.id}`,
+    cbsUnitId: parcel.tkgmParcelId,
+    cbsStorageId: parcel.id,
+    parcelOnly: true,
+    producerName: "Sahada tespit edilecek",
+    producerTc: "",
+    registrationNo: "",
+    unitNo: `TKGM-${parcelIdentity}`,
+    city: parcel.city,
+    district: parcel.district,
+    village: parcel.village,
+    adaNo: parcel.adaNo,
+    parcelNo: parcel.parcelNo,
+    crop: "Sahada tespit edilecek",
+    greenhouseArea: 0,
+    status: "taslak",
+    parcelPolygon: parcel.polygon,
+    greenhousePolygon: [],
+  };
+}
+
+function isPolygonVisibleInRegion(
+  points: { latitude: number; longitude: number }[],
+  region: Region,
+) {
+  if (!points.length) return false;
+
+  const latitudePadding = region.latitudeDelta * 0.15;
+  const longitudePadding = region.longitudeDelta * 0.15;
+  const regionMinLatitude = region.latitude - region.latitudeDelta / 2 - latitudePadding;
+  const regionMaxLatitude = region.latitude + region.latitudeDelta / 2 + latitudePadding;
+  const regionMinLongitude = region.longitude - region.longitudeDelta / 2 - longitudePadding;
+  const regionMaxLongitude = region.longitude + region.longitudeDelta / 2 + longitudePadding;
+  const polygonLatitudes = points.map((point) => point.latitude);
+  const polygonLongitudes = points.map((point) => point.longitude);
+  const polygonMinLatitude = Math.min(...polygonLatitudes);
+  const polygonMaxLatitude = Math.max(...polygonLatitudes);
+  const polygonMinLongitude = Math.min(...polygonLongitudes);
+  const polygonMaxLongitude = Math.max(...polygonLongitudes);
+
+  return (
+    polygonMaxLatitude >= regionMinLatitude &&
+    polygonMinLatitude <= regionMaxLatitude &&
+    polygonMaxLongitude >= regionMinLongitude &&
+    polygonMinLongitude <= regionMaxLongitude
+  );
+}
+
+function waitForLocationResult<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  message: string,
+) {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+
+    operation.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
 
 type UserMapLocation = {
   latitude: number;
@@ -88,15 +204,45 @@ const WORKFLOW_KIND_COLOR: Record<TaskWorkflowKind, string> = {
 };
 
 async function loadCachedUnits() {
-  const cached = await AsyncStorage.getItem(CACHE_KEY);
-  if (!cached) return null;
+  try {
+    const cached = await AsyncStorage.getItem(CACHE_KEY);
+    if (!cached) return null;
 
-  const parsed = JSON.parse(cached);
-  return Array.isArray(parsed) ? (parsed as CbsUnit[]) : null;
+    const parsed = JSON.parse(cached);
+    return Array.isArray(parsed) ? (parsed as CbsUnit[]) : null;
+  } catch {
+    await AsyncStorage.removeItem(CACHE_KEY).catch(() => undefined);
+    return null;
+  }
 }
 
 async function cacheUnits(units: CbsUnit[]) {
-  await AsyncStorage.setItem(CACHE_KEY, JSON.stringify(units));
+  try {
+    const lightUnits = units.slice(0, CACHE_UNIT_LIMIT).map((unit) => ({
+      id: unit.id,
+      cbsUnitId: unit.cbsUnitId,
+      greenhouseUnitId: unit.greenhouseUnitId,
+      producerName: unit.producerName,
+      producerTc: unit.producerTc,
+      producerPhone: unit.producerPhone,
+      registrationNo: unit.registrationNo,
+      unitNo: unit.unitNo,
+      city: unit.city,
+      district: unit.district,
+      village: unit.village,
+      adaNo: unit.adaNo,
+      parcelNo: unit.parcelNo,
+      crop: unit.crop,
+      greenhouseArea: unit.greenhouseArea,
+      status: unit.status,
+      parcelPolygon: unit.parcelPolygon,
+      greenhousePolygon: unit.greenhousePolygon,
+    }));
+
+    await AsyncStorage.setItem(CACHE_KEY, JSON.stringify(lightUnits));
+  } catch {
+    await AsyncStorage.removeItem(CACHE_KEY).catch(() => undefined);
+  }
 }
 
 function getHeadingDegree(heading: Location.LocationHeadingObject | null) {
@@ -122,6 +268,59 @@ function hasMeaningfulUnitValue(value: unknown) {
   const text = String(value || "").trim();
 
   return Boolean(text && text !== "-" && text.toLocaleLowerCase("tr-TR") !== "null");
+}
+
+function singleRouteValue(value: unknown) {
+  return String(Array.isArray(value) ? value[0] : value || "");
+}
+
+function getTaskPolygon(value: unknown, fallback: { latitude: number; longitude: number }) {
+  if (value === null || value === undefined || value === "") {
+    return [];
+  }
+
+  const polygon = parsePolygon(value, fallback);
+  return polygon.length >= 3 ? polygon : [];
+}
+
+function buildAssignedTaskUnit(task: any): CbsUnit | null {
+  const taskId = String(task?.id || "").trim();
+
+  if (!taskId) {
+    return null;
+  }
+
+  const fallback = {
+    latitude: Number(task?.latitude) || ANTALYA_REGION.latitude,
+    longitude: Number(task?.longitude) || ANTALYA_REGION.longitude,
+  };
+  const parcelPolygon = getTaskPolygon(task?.parcel_polygon ?? task?.parcelPolygon, fallback);
+  const greenhousePolygon = getTaskPolygon(task?.greenhouse_polygon ?? task?.greenhousePolygon, fallback);
+
+  return {
+    id: `assigned-task-${taskId}`,
+    origin: "task",
+    cbsUnitId: task?.cbs_unit_id ? String(task.cbs_unit_id) : undefined,
+    cbsStorageId: task?.cbs_unit_id ? String(task.cbs_unit_id) : undefined,
+    greenhouseUnitId: task?.greenhouse_unit_id ? String(task.greenhouse_unit_id) : undefined,
+    producerId: task?.producer_id ? String(task.producer_id) : undefined,
+    parcelOnly: greenhousePolygon.length < 3,
+    producerName: fixMojibake(task?.producer_name || "Sahada tespit edilecek"),
+    producerTc: String(task?.tc_no || task?.producer_tc || ""),
+    producerPhone: task?.phone ? String(task.phone) : undefined,
+    registrationNo: String(task?.registration_no || ""),
+    unitNo: String(task?.unit_no || `GÖREV-${taskId}`),
+    city: fixMojibake(task?.city || "Antalya"),
+    district: fixMojibake(task?.district_name || task?.district || "Aksu"),
+    village: fixMojibake(task?.village || "-"),
+    adaNo: String(task?.ada_no || "-"),
+    parcelNo: String(task?.parcel_no || "-"),
+    crop: fixMojibake(task?.detected_crop || "Sahada tespit edilecek"),
+    greenhouseArea: Number(task?.greenhouse_area) || 0,
+    status: "inceleme",
+    parcelPolygon,
+    greenhousePolygon,
+  };
 }
 
 function taskMatchesUnit(task: any, unit: CbsUnit) {
@@ -173,39 +372,48 @@ function getAdministrativeSearchText(unit: CbsUnit) {
 }
 
 export default function CBSScreen() {
-  return (
-    <RoleGate>
-      <CBSContent />
-    </RoleGate>
-  );
+  return <CBSContent />;
 }
 
 function CBSContent() {
   const params = useLocalSearchParams();
   const mapRef = useRef<MapView | null>(null);
   const refreshRequestRef = useRef(0);
+  const parcelRequestRef = useRef(0);
+  const parcelLoadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mapRegionRef = useRef<Region>(ANTALYA_REGION);
+  const searchRequestRef = useRef(0);
+  const hasServerSearchRef = useRef(false);
   const autoFocusedQueryRef = useRef("");
+  const assignedTaskFocusRef = useRef("");
+  const dismissedAssignedTaskFocusRef = useRef("");
   const geocodeCacheRef = useRef(new Map<string, UserMapLocation | null>());
-  const [units, setUnits] = useState<CbsUnit[]>([]);
+  const [units, setUnits] = useState<CbsUnit[]>(getBundledCbsUnits);
+  const [tkgmParcels, setTkgmParcels] = useState<CbsParcel[]>([]);
   const [workflowTasks, setWorkflowTasks] = useState<any[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const [searchIssue, setSearchIssue] = useState<string | null>(null);
   const [offline, setOffline] = useState(false);
+  const [showParcels, setShowParcels] = useState(true);
   const [showGreenhouses, setShowGreenhouses] = useState(true);
+  const [showKobuksRecords, setShowKobuksRecords] = useState(true);
   const [showGoogleSatellite, setShowGoogleSatellite] = useState(false);
   const [showQgisLabels, setShowQgisLabels] = useState(false);
   const [showStaffLocations, setShowStaffLocations] = useState(false);
   const [showLayerPanel, setShowLayerPanel] = useState(false);
   const [nearbyMode, setNearbyMode] = useState(false);
   const [openingAssignment, setOpeningAssignment] = useState(false);
-  const [openingPolygon, setOpeningPolygon] = useState(false);
   const [profile, setProfile] = useState<any>(null);
   const [staffLocations, setStaffLocations] = useState<LiveFieldLocation[]>([]);
   const [userLocation, setUserLocation] = useState<UserMapLocation | null>(null);
   const [userHeading, setUserHeading] = useState<number | null>(null);
   const [locating, setLocating] = useState(false);
+  const [mapRegion, setMapRegion] = useState<Region>(ANTALYA_REGION);
+  const [assignedTaskUnit, setAssignedTaskUnit] = useState<CbsUnit | null>(null);
   const assignedTaskId = String(params.task_id || "");
   const assignedUnitNo = String(params.unit_no || "");
   const assignedAdaNo = String(params.ada_no || "");
@@ -215,12 +423,65 @@ function CBSContent() {
   const routeWorkflowKind = normalizeWorkflowKind(params.workflow);
   const [workflowOverride, setWorkflowOverride] = useState<{ routeKey: string; kind: TaskWorkflowKind } | null>(null);
   const activeWorkflowKind = workflowOverride?.routeKey === routeWorkflowKey ? workflowOverride.kind : routeWorkflowKind;
+  const routeAssignedTaskUnit = useMemo(() => {
+    if (!assignedTaskId) {
+      return null;
+    }
+
+    return buildAssignedTaskUnit({
+      id: assignedTaskId,
+      unit_no: assignedUnitNo,
+      ada_no: assignedAdaNo,
+      parcel_no: assignedParcelNo,
+      latitude: singleRouteValue(params.latitude),
+      longitude: singleRouteValue(params.longitude),
+      parcel_polygon: singleRouteValue(params.parcel_polygon),
+      greenhouse_polygon: singleRouteValue(params.greenhouse_polygon),
+      workflow_type: activeWorkflowKind,
+    });
+  }, [activeWorkflowKind, assignedAdaNo, assignedParcelNo, assignedTaskId, assignedUnitNo, params.greenhouse_polygon, params.latitude, params.longitude, params.parcel_polygon]);
+  const activeAssignedTaskUnit = assignedTaskId ? assignedTaskUnit || routeAssignedTaskUnit : null;
+  const mapUnits = useMemo(
+    () => (activeAssignedTaskUnit ? mergeCbsUnits(units, [activeAssignedTaskUnit]) : units),
+    [activeAssignedTaskUnit, units],
+  );
   const selectWorkflowKind = useCallback(
     (kind: TaskWorkflowKind) => {
       setWorkflowOverride({ routeKey: routeWorkflowKey, kind });
     },
     [routeWorkflowKey],
   );
+
+  const loadKobuksForMapParcels = useCallback(async (parcels: CbsParcel[]) => {
+    try {
+      const kobuksUnits = await loadKobuksMapUnitsForParcels(parcels);
+
+      setUnits((current) =>
+        mergeCbsUnits(
+          current.filter((unit) => unit.origin !== "kobuks"),
+          kobuksUnits,
+        ),
+      );
+    } catch {
+      // KOBÜKS records are optional map overlays; the parcel layer remains usable.
+    }
+  }, []);
+
+  const loadParcelsForMapRegion = useCallback(async (region: Region) => {
+    const requestId = parcelRequestRef.current + 1;
+    parcelRequestRef.current = requestId;
+
+    try {
+      const parcels = await loadTkgmParcelsForRegion(region);
+
+      if (requestId === parcelRequestRef.current) {
+        setTkgmParcels(parcels);
+        void loadKobuksForMapParcels(parcels);
+      }
+    } catch {
+      // Retain the last successful viewport while a network request is unavailable.
+    }
+  }, [loadKobuksForMapParcels]);
 
   const refreshMapData = useCallback(async (showSpinner = false) => {
     const requestId = refreshRequestRef.current + 1;
@@ -230,35 +491,86 @@ function CBSContent() {
       setLoading(true);
     }
 
-    const [taskResult, unitResult] = await Promise.allSettled([getTasks(), loadCbsUnits()]);
+    try {
+      void getTasks()
+        .then((taskResult) => {
+          if (requestId === refreshRequestRef.current) {
+            setWorkflowTasks((taskResult.data || []).filter((task: any) => !isTaskCancelled(task)));
+          }
+        })
+        .catch(() => undefined);
+      const [unitResult, parcelResult] = await Promise.allSettled([
+        loadCbsUnits({ includeKobuks: false }),
+        loadTkgmParcelsForRegion(mapRegionRef.current),
+      ]);
 
-    if (requestId !== refreshRequestRef.current) {
+      if (requestId !== refreshRequestRef.current) {
+        return;
+      }
+
+      if (unitResult.status === "rejected") {
+        throw unitResult.reason;
+      }
+
+      const nextUnits = unitResult.value;
+      setUnits(nextUnits);
+      if (parcelResult.status === "fulfilled") {
+        setTkgmParcels(parcelResult.value);
+        void loadKobuksForMapParcels(parcelResult.value);
+      }
+      setSelectedId((current) => (current && nextUnits.some((unit) => unit.id === current) ? current : null));
+      setOffline(false);
+      setSearchIssue(null);
+      void cacheUnits(nextUnits);
+    } catch {
+      if (requestId === refreshRequestRef.current) {
+        const cached = await loadCachedUnits();
+        const fallback = cached?.length ? cached : getBundledCbsUnits();
+
+        setUnits(fallback);
+        setSelectedId((current) => (current && fallback.some((unit) => unit.id === current) ? current : null));
+        setOffline(true);
+      }
+    } finally {
+      if (requestId === refreshRequestRef.current) {
+        setLoading(false);
+      }
+    }
+  }, [loadKobuksForMapParcels]);
+
+  const runCbsSearch = useCallback(async (searchText: string) => {
+    const needle = searchText.trim();
+
+    if (needle.length < 2) {
       return;
     }
 
-    if (taskResult.status === "fulfilled") {
-      setWorkflowTasks((taskResult.value.data || []).filter((task: any) => !isTaskCancelled(task)));
-    } else {
-      setWorkflowTasks([]);
-    }
+    const requestId = searchRequestRef.current + 1;
+    searchRequestRef.current = requestId;
+    hasServerSearchRef.current = true;
+    setSearching(true);
+    setSearchIssue(null);
 
-    if (unitResult.status === "fulfilled") {
-      const nextUnits = unitResult.value;
+    try {
+      const nextUnits = await loadCbsUnits({ kobuksQuery: needle, kobuksLimit: 120 });
+
+      if (requestId !== searchRequestRef.current) {
+        return;
+      }
 
       setUnits(nextUnits);
       setSelectedId((current) => (current && nextUnits.some((unit) => unit.id === current) ? current : null));
       setOffline(false);
-      await cacheUnits(nextUnits);
-    } else {
-      const cached = await loadCachedUnits();
-      const fallback = cached?.length ? cached : [];
-
-      setUnits(fallback);
-      setSelectedId((current) => (current && fallback.some((unit) => unit.id === current) ? current : null));
-      setOffline(true);
+      void cacheUnits(nextUnits);
+    } catch {
+      if (requestId === searchRequestRef.current) {
+        setSearchIssue("CBS/KOBÜKS araması tamamlanamadı. Bağlantıyı kontrol edip tekrar deneyin.");
+      }
+    } finally {
+      if (requestId === searchRequestRef.current) {
+        setSearching(false);
+      }
     }
-
-    setLoading(false);
   }, []);
 
   useFocusEffect(
@@ -267,17 +579,49 @@ function CBSContent() {
 
       return () => {
         refreshRequestRef.current += 1;
+        searchRequestRef.current += 1;
+        parcelRequestRef.current += 1;
       };
     }, [refreshMapData]),
   );
 
+  useEffect(() => {
+    const needle = deferredQuery.trim();
+
+    if (!needle) {
+      const timer = setTimeout(() => {
+        setSearchIssue(null);
+        setSearching(false);
+
+        if (hasServerSearchRef.current) {
+          hasServerSearchRef.current = false;
+          refreshMapData(false);
+        }
+      }, 0);
+
+      return () => clearTimeout(timer);
+    }
+
+    if (needle.length < 2) {
+      return undefined;
+    }
+
+    const timer = setTimeout(() => {
+      void runCbsSearch(needle);
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [deferredQuery, refreshMapData, runCbsSearch]);
+
   const filteredUnits = useMemo(() => {
     const needle = deferredQuery.trim().toLocaleLowerCase("tr-TR");
-    if (!needle) return units;
+    if (!needle) return mapUnits;
 
-    return units.filter((unit) =>
+    return mapUnits.filter((unit) =>
       [
         unit.producerName,
+        unit.producerTc,
+        unit.producerPhone,
         unit.registrationNo,
         unit.unitNo,
         unit.city,
@@ -295,24 +639,50 @@ function CBSContent() {
         .toLocaleLowerCase("tr-TR")
         .includes(needle),
     );
-  }, [deferredQuery, units]);
+  }, [deferredQuery, mapUnits]);
 
   const visibleUnits = useMemo(() => {
     if (!nearbyMode) {
       return filteredUnits;
     }
 
-    const selectedUnit = units.find((unit) => unit.id === selectedId);
-    const anchor = selectedUnit ? getCenter(selectedUnit.greenhousePolygon) : ANTALYA_REGION;
+    const selectedUnit = mapUnits.find((unit) => unit.id === selectedId);
+    const anchor = selectedUnit ? getUnitMapCenter(selectedUnit) : ANTALYA_REGION;
 
     return [...filteredUnits]
       .sort((first, second) => distanceFrom(anchor, first) - distanceFrom(anchor, second))
       .slice(0, 8);
-  }, [filteredUnits, nearbyMode, selectedId, units]);
+  }, [filteredUnits, mapUnits, nearbyMode, selectedId]);
+
+  const safeStaffLocations = useMemo(
+    () =>
+      staffLocations.reduce<(LiveFieldLocation & { latitudeNumber: number; longitudeNumber: number })[]>(
+        (validLocations, staff) => {
+          const latitudeNumber = Number(staff.latitude);
+          const longitudeNumber = Number(staff.longitude);
+
+          if (Number.isFinite(latitudeNumber) && Number.isFinite(longitudeNumber)) {
+            validLocations.push({
+              ...staff,
+              latitudeNumber,
+              longitudeNumber,
+            });
+          }
+
+          return validLocations;
+        },
+        [],
+      ),
+    [staffLocations],
+  );
 
   const isAssignedUnit = useCallback((unit: CbsUnit) => {
     if (!assignedTaskId) {
       return false;
+    }
+
+    if (activeAssignedTaskUnit) {
+      return unit.id === activeAssignedTaskUnit.id;
     }
 
     return (
@@ -324,13 +694,13 @@ function CBSContent() {
         unit.adaNo === assignedAdaNo &&
         unit.parcelNo === assignedParcelNo)
     );
-  }, [assignedAdaNo, assignedParcelNo, assignedTaskId, assignedUnitNo]);
+  }, [activeAssignedTaskUnit, assignedAdaNo, assignedParcelNo, assignedTaskId, assignedUnitNo]);
 
-  const selectedUnit = useMemo(() => units.find((unit) => unit.id === selectedId) || null, [selectedId, units]);
+  const selectedUnit = useMemo(() => mapUnits.find((unit) => unit.id === selectedId) || null, [mapUnits, selectedId]);
   const unitWorkflowMap = useMemo(() => {
     const map = new Map<string, Record<TaskWorkflowKind, UnitWorkflowInfo>>();
 
-    units.forEach((unit) => {
+    mapUnits.forEach((unit) => {
       const workflowInfo = Object.fromEntries(
         WORKFLOW_KINDS.map((kind) => {
           const task = getUnitWorkflowTask(unit, kind, workflowTasks);
@@ -349,7 +719,7 @@ function CBSContent() {
     });
 
     return map;
-  }, [units, workflowTasks]);
+  }, [mapUnits, workflowTasks]);
   const selectedWorkflowInfo = selectedUnit ? unitWorkflowMap.get(selectedUnit.id)?.[activeWorkflowKind] : null;
   const selectedWorkflowState = selectedWorkflowInfo?.state || null;
   const selectedWorkflowTask = selectedWorkflowInfo?.task || null;
@@ -384,6 +754,101 @@ function CBSContent() {
       .slice(0, MAX_RENDERED_UNITS);
   }, [isAssignedUnit, nearbyMode, selectedId, visibleUnits]);
 
+  const visibleMapUnits = useMemo(() => {
+    const candidates = visibleUnits.filter((unit) =>
+      isPolygonVisibleInRegion(
+        unit.greenhousePolygon.length >= 3 ? unit.greenhousePolygon : unit.parcelPolygon,
+        mapRegion,
+      ),
+    );
+
+    return candidates
+      .sort((first, second) => {
+        if (first.id === selectedId) return -1;
+        if (second.id === selectedId) return 1;
+        return 0;
+      })
+      .slice(0, MAX_VISIBLE_MAP_UNITS);
+  }, [mapRegion, selectedId, visibleUnits]);
+
+  const renderedParcelFeatures = useMemo(() => {
+    const features = new Map<
+      string,
+      {
+        key: string;
+        polygon: CbsUnit["parcelPolygon"];
+        assigned: boolean;
+        selected: boolean;
+        parcelId?: string;
+      }
+    >();
+
+    tkgmParcels.forEach((parcel) => {
+      if (!isPolygonVisibleInRegion(parcel.polygon, mapRegion)) return;
+
+      const signature = getPolygonSignature(parcel.polygon);
+
+      if (signature && !features.has(signature)) {
+        features.set(signature, {
+          key: `tkgm-${parcel.id}`,
+          polygon: parcel.polygon,
+          assigned: false,
+          selected: selectedId === `tkgm-parcel-${parcel.id}`,
+          parcelId: parcel.id,
+        });
+      }
+    });
+
+    if (activeAssignedTaskUnit?.parcelPolygon.length && isPolygonVisibleInRegion(activeAssignedTaskUnit.parcelPolygon, mapRegion)) {
+      const signature = getPolygonSignature(activeAssignedTaskUnit.parcelPolygon);
+
+      if (signature) {
+        features.set(signature, {
+          key: `assigned-parcel-${activeAssignedTaskUnit.id}`,
+          polygon: activeAssignedTaskUnit.parcelPolygon,
+          assigned: true,
+          selected: selectedId === activeAssignedTaskUnit.id,
+        });
+      }
+    }
+
+    return [...features.values()];
+  }, [activeAssignedTaskUnit, mapRegion, selectedId, tkgmParcels]);
+
+  const renderedGreenhouseUnits = useMemo(() => {
+    const signatures = new Set<string>();
+
+    return visibleMapUnits.filter((unit) => {
+      if (unit.greenhousePolygon.length < 3) {
+        return false;
+      }
+      const signature = getPolygonSignature(unit.greenhousePolygon);
+
+      if (!signature || signatures.has(signature)) {
+        return false;
+      }
+
+      signatures.add(signature);
+      return true;
+    });
+  }, [visibleMapUnits]);
+
+  const renderedKobuksParcelFeatures = useMemo(() => {
+    const features = new Map<string, CbsUnit>();
+
+    visibleMapUnits.forEach((unit) => {
+      if (unit.origin !== "kobuks" || unit.parcelPolygon.length < 3) return;
+      const parcelKey = getKobuksParcelOverlayKey(unit);
+      const existing = features.get(parcelKey);
+
+      if (!existing || selectedId === unit.id) {
+        features.set(parcelKey, unit);
+      }
+    });
+
+    return [...features.values()];
+  }, [selectedId, visibleMapUnits]);
+
   const focusUserLocation = useCallback(async (showAlert = true) => {
     setLocating(true);
 
@@ -397,13 +862,25 @@ function CBSContent() {
         return;
       }
 
-      const lastKnown = await Location.getLastKnownPositionAsync({ maxAge: 60000 });
+      const lastKnown = await waitForLocationResult(
+        Location.getLastKnownPositionAsync({ maxAge: 60000 }),
+        3000,
+        "Son konum okunamadı.",
+      ).catch(() => null);
       const position =
         lastKnown ||
-        (await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.High,
-        }));
-      const heading = await Location.getHeadingAsync().catch(() => null);
+        (await waitForLocationResult(
+          Location.getCurrentPositionAsync({
+            accuracy: Location.Accuracy.High,
+          }),
+          10000,
+          "Konum isteği zaman aşımına uğradı.",
+        ));
+      const heading = await waitForLocationResult(
+        Location.getHeadingAsync(),
+        2500,
+        "Pusula verisi alınamadı.",
+      ).catch(() => null);
       const coordinate = {
         latitude: position.coords.latitude,
         longitude: position.coords.longitude,
@@ -430,14 +907,43 @@ function CBSContent() {
   }, []);
 
   const loadUnits = useCallback(async () => {
+    const needle = query.trim();
+
+    if (needle.length >= 2) {
+      await runCbsSearch(needle);
+      return;
+    }
+
     await refreshMapData(true);
-  }, [refreshMapData]);
+  }, [query, refreshMapData, runCbsSearch]);
 
   useEffect(() => {
     getMyProfile()
       .then(setProfile)
       .catch(() => setProfile(null));
   }, []);
+
+  useEffect(() => {
+    if (!assignedTaskId) {
+      return;
+    }
+
+    let active = true;
+
+    getTaskById(assignedTaskId)
+      .then((result) => {
+        if (!active || result.error || !result.data) {
+          return;
+        }
+
+        setAssignedTaskUnit(buildAssignedTaskUnit(result.data));
+      })
+      .catch(() => undefined);
+
+    return () => {
+      active = false;
+    };
+  }, [assignedTaskId]);
 
   useEffect(() => {
     let active = true;
@@ -517,7 +1023,11 @@ function CBSContent() {
 
   const getUnitWithResolvedCenter = useCallback(
     async (unit: CbsUnit) => {
-      if (!isDefaultCbsFallbackPolygon(unit.greenhousePolygon)) {
+      if (
+        unit.parcelOnly ||
+        (unit.greenhousePolygon.length >= 3 &&
+          !isDefaultCbsFallbackPolygon(unit.greenhousePolygon))
+      ) {
         return unit;
       }
 
@@ -534,7 +1044,7 @@ function CBSContent() {
   );
 
   const focusUnit = useCallback((unit: CbsUnit, animate = true) => {
-    const center = getCenter(unit.greenhousePolygon);
+    const center = getUnitMapCenter(unit);
 
     setSelectedId(unit.id);
 
@@ -547,8 +1057,21 @@ function CBSContent() {
         { duration: 450 },
       );
 
-      if (isDefaultCbsFallbackPolygon(unit.greenhousePolygon)) {
+      if (!unit.parcelOnly && isDefaultCbsFallbackPolygon(unit.greenhousePolygon)) {
         resolveUnitMapCenter(unit).then((resolvedCenter) => {
+          const fallbackPolygon = buildFallbackPolygon(resolvedCenter);
+
+          setUnits((current) =>
+            current.map((item) =>
+              item.id === unit.id
+                ? {
+                    ...item,
+                    parcelPolygon: isDefaultCbsFallbackPolygon(item.parcelPolygon) ? fallbackPolygon : item.parcelPolygon,
+                    greenhousePolygon: fallbackPolygon,
+                  }
+                : item,
+            ),
+          );
           mapRef.current?.animateCamera(
             {
               center: resolvedCenter,
@@ -560,6 +1083,21 @@ function CBSContent() {
       }
     }
   }, [resolveUnitMapCenter]);
+
+  const focusTkgmParcel = useCallback((parcelId: string) => {
+    const parcel = tkgmParcels.find((item) => item.id === parcelId);
+
+    if (!parcel) {
+      return;
+    }
+
+    const parcelUnit = buildTkgmParcelUnit(parcel);
+
+    setUnits((current) =>
+      current.some((unit) => unit.id === parcelUnit.id) ? current : [parcelUnit, ...current],
+    );
+    setSelectedId(parcelUnit.id);
+  }, [tkgmParcels]);
 
   useEffect(() => {
     const needle = deferredQuery.trim();
@@ -583,8 +1121,8 @@ function CBSContent() {
     focusUnit(unit);
   }, [deferredQuery, filteredUnits, focusUnit, loading]);
 
-  function canToggleLayer(nextGreenhouses: boolean) {
-    if (!nextGreenhouses) {
+  function canToggleLayer(nextParcels: boolean, nextGreenhouses: boolean, nextKobuksRecords: boolean) {
+    if (!nextParcels && !nextGreenhouses && !nextKobuksRecords) {
       Alert.alert("Katman gerekli", "Haritada en az bir CBS katmanı açık kalmalı.");
       return false;
     }
@@ -594,19 +1132,69 @@ function CBSContent() {
 
   function toggleGreenhouses() {
     const nextValue = !showGreenhouses;
-    if (!canToggleLayer(nextValue)) {
+    if (!canToggleLayer(showParcels, nextValue, showKobuksRecords)) {
       return;
     }
 
     setShowGreenhouses(nextValue);
   }
 
+  function toggleParcels() {
+    const nextValue = !showParcels;
+    if (canToggleLayer(nextValue, showGreenhouses, showKobuksRecords)) {
+      setShowParcels(nextValue);
+    }
+  }
+
+  function toggleKobuksRecords() {
+    const nextValue = !showKobuksRecords;
+    if (canToggleLayer(showParcels, showGreenhouses, nextValue)) {
+      setShowKobuksRecords(nextValue);
+    }
+  }
+
+  function closeSelectedUnit() {
+    const focusKey = activeAssignedTaskUnit && assignedTaskId
+      ? `${assignedTaskId}:${activeAssignedTaskUnit.id}`
+      : "";
+
+    if (focusKey && selectedId === activeAssignedTaskUnit?.id) {
+      dismissedAssignedTaskFocusRef.current = focusKey;
+    }
+
+    setSelectedId(null);
+  }
+
   useEffect(() => {
-    if (!units.length || (!assignedUnitNo && !assignedAdaNo && !assignedParcelNo)) {
+    if (!activeAssignedTaskUnit || !assignedTaskId) {
       return;
     }
 
-    const match = units.find(
+    const focusKey = `${assignedTaskId}:${activeAssignedTaskUnit.id}`;
+
+    if (
+      assignedTaskFocusRef.current === focusKey ||
+      dismissedAssignedTaskFocusRef.current === focusKey
+    ) {
+      return;
+    }
+
+    assignedTaskFocusRef.current = focusKey;
+
+    const timer = setTimeout(() => focusUnit(activeAssignedTaskUnit), 0);
+    return () => clearTimeout(timer);
+  }, [activeAssignedTaskUnit, assignedTaskId, focusUnit]);
+
+  useEffect(() => {
+    if (
+      activeAssignedTaskUnit ||
+      !mapUnits.length ||
+      (!assignedUnitNo && !assignedAdaNo && !assignedParcelNo)
+    ) {
+      return;
+    }
+
+    const match = mapUnits.find(
       (unit) =>
         (hasMeaningfulUnitValue(assignedUnitNo) && unit.unitNo === assignedUnitNo) ||
         (hasMeaningfulUnitValue(assignedAdaNo) &&
@@ -620,42 +1208,7 @@ function CBSContent() {
     if (match) {
       setTimeout(() => focusUnit(match), 0);
     }
-  }, [assignedAdaNo, assignedParcelNo, assignedUnitNo, focusUnit, units]);
-
-  async function openPolygonEditor(unit: CbsUnit) {
-    if (openingPolygon) {
-      return;
-    }
-
-    setOpeningPolygon(true);
-
-    try {
-      const taskId = params.task_id ? String(params.task_id) : "";
-
-      if (taskId && isAssignedUnit(unit)) {
-        router.push(`/task/${taskId}/polygon` as any);
-        return;
-      }
-
-      const existingWorkflowTask = getUnitWorkflowTask(unit, activeWorkflowKind, workflowTasks);
-
-      if (existingWorkflowTask?.id) {
-        router.push(`/task/${existingWorkflowTask.id}/polygon` as any);
-        return;
-      }
-
-      const unitForPolygon = await getUnitWithResolvedCenter(unit);
-      const result = await startInspectionFromUnit(unitForPolygon, "Sahada", activeWorkflowKind);
-
-      if (result.task?.id) {
-        router.push(`/task/${result.task.id}/polygon` as any);
-      }
-    } catch (error: any) {
-      Alert.alert("Poligon ekranı açılamadı", error?.message || "CBS poligonu için görev kaydı hazırlanamadı.");
-    } finally {
-      setOpeningPolygon(false);
-    }
-  }
+  }, [assignedAdaNo, assignedParcelNo, activeAssignedTaskUnit, assignedUnitNo, focusUnit, mapUnits]);
 
   async function openAssignmentScreen(unit: CbsUnit) {
     if (openingAssignment) {
@@ -685,7 +1238,8 @@ function CBSContent() {
           return;
         }
 
-        const result = await startInspectionFromUnit(unit, "Sahada", activeWorkflowKind);
+        const unitForInspection = await getUnitWithResolvedCenter(unit);
+        const result = await startInspectionFromUnit(unitForInspection, "Sahada", activeWorkflowKind);
 
         if (result.task?.id) {
           router.push(`/task/${result.task.id}` as any);
@@ -693,27 +1247,28 @@ function CBSContent() {
         return;
       }
 
-      const center = getCenter(unit.greenhousePolygon);
+      const unitForTask = await getUnitWithResolvedCenter(unit);
+      const center = getUnitMapCenter(unitForTask);
 
       router.push({
         pathname: "/new-task",
         params: {
           workflow: activeWorkflowKind,
-          tc_no: unit.producerTc,
-          producer_name: unit.producerName,
-          phone: unit.producerPhone || "",
-          city: unit.city,
-          district_name: unit.district,
-          village: unit.village,
-          ada_no: unit.adaNo,
-          parcel_no: unit.parcelNo,
-          detected_crop: unit.crop,
-          unit_no: unit.unitNo,
-          greenhouse_area: String(unit.greenhouseArea || ""),
+          tc_no: unitForTask.producerTc,
+          producer_name: unitForTask.producerName,
+          phone: unitForTask.producerPhone || "",
+          city: unitForTask.city,
+          district_name: unitForTask.district,
+          village: unitForTask.village,
+          ada_no: unitForTask.adaNo,
+          parcel_no: unitForTask.parcelNo,
+          detected_crop: unitForTask.crop,
+          unit_no: unitForTask.unitNo,
+          greenhouse_area: String(unitForTask.greenhouseArea || ""),
           latitude: String(center.latitude),
           longitude: String(center.longitude),
-          parcel_polygon: JSON.stringify(unit.parcelPolygon),
-          greenhouse_polygon: JSON.stringify(unit.greenhousePolygon),
+          parcel_polygon: JSON.stringify(unitForTask.parcelPolygon),
+          greenhouse_polygon: JSON.stringify(unitForTask.greenhousePolygon),
         },
       } as any);
     } catch (error: any) {
@@ -743,7 +1298,7 @@ function CBSContent() {
         <View style={styles.headerText}>
           <Text style={styles.kicker}>CBS merkezi</Text>
           <Text style={styles.title}>Sera Haritası</Text>
-          <Text style={styles.subtitle}>Üniteye dokununca bilgi kartı açılır; karttan görevlendirme ekranına geçilir.</Text>
+          <Text style={styles.subtitle}>Harita hareket ettikçe görünür alandaki TKGM parselleri ve bağlı sera kayıtları otomatik yüklenir.</Text>
         </View>
         <View style={styles.headerIcon}>
           <MaterialCommunityIcons name="map-marker-radius-outline" color="#bbf7d0" size={24} />
@@ -759,7 +1314,7 @@ function CBSContent() {
           style={styles.search}
         />
         <Pressable onPress={loadUnits} style={styles.iconButton}>
-          <MaterialCommunityIcons name="refresh" color="white" size={20} />
+          {searching ? <ActivityIndicator color="white" size="small" /> : <MaterialCommunityIcons name="refresh" color="white" size={20} />}
         </Pressable>
       </View>
 
@@ -788,7 +1343,9 @@ function CBSContent() {
         <View>
           <Text style={styles.toolbarTitle}>Harita</Text>
           <Text style={styles.toolbarMeta}>
-            {renderedUnits.length}/{visibleUnits.length} ünite çiziliyor{nearbyMode ? " · yakındaki görünüm" : ""}
+            {searching
+              ? "CBS/KOBÜKS aranıyor"
+              : `${renderedUnits.length}/${visibleUnits.length} ünite çiziliyor${nearbyMode ? " · yakındaki görünüm" : ""}`}
           </Text>
         </View>
         <Pressable
@@ -809,11 +1366,25 @@ function CBSContent() {
         </View>
       ) : null}
 
+      {searchIssue ? (
+        <View style={styles.warning}>
+          <Text style={styles.warningText}>{searchIssue}</Text>
+        </View>
+      ) : null}
+
+      {!offline && !tkgmParcels.length ? (
+        <View style={styles.warning}>
+          <Text style={styles.warningText}>
+            Bu harita alanı için henüz içe aktarılmış TKGM parseli yok. Yetkili Aksu parsel aktarımı tamamlandığında görünür alandaki parseller otomatik görünür.
+          </Text>
+        </View>
+      ) : null}
+
       {assignedTaskId ? (
         <View style={styles.assignedNotice}>
           <MaterialCommunityIcons name="map-marker-check-outline" color="#bfdbfe" size={18} />
           <Text style={styles.assignedNoticeText}>
-            Admin tarafından atanan göreve dokunun, açılan karttan görev detayına geçin.
+            Size atanan görev sarı renkle vurgulandı. Parsel ve varsa sera poligonuna odaklanıldı.
           </Text>
         </View>
       ) : null}
@@ -822,7 +1393,17 @@ function CBSContent() {
         <MapView
           ref={mapRef}
           style={styles.map}
-          initialRegion={ANTALYA_REGION}
+          initialRegion={mapRegion}
+          onRegionChangeComplete={(region) => {
+            mapRegionRef.current = region;
+            setMapRegion(region);
+            if (parcelLoadTimerRef.current) {
+              clearTimeout(parcelLoadTimerRef.current);
+            }
+            parcelLoadTimerRef.current = setTimeout(() => {
+              void loadParcelsForMapRegion(region);
+            }, 350);
+          }}
           scrollEnabled
           zoomEnabled
           zoomControlEnabled
@@ -830,11 +1411,33 @@ function CBSContent() {
           showsCompass
           mapType={showGoogleSatellite ? "satellite" : "standard"}
         >
-          {renderedUnits.map((unit) => {
+          {showParcels
+            ? renderedParcelFeatures.map((feature) => {
+                const openParcelCard = () => {
+                  if (feature.parcelId) {
+                    focusTkgmParcel(feature.parcelId);
+                  }
+                };
+
+                return (
+                  <Polygon
+                    key={feature.key}
+                    coordinates={feature.polygon}
+                    strokeColor={feature.assigned ? "#facc15" : "#38bdf8"}
+                    fillColor={feature.assigned ? "rgba(250,204,21,0.28)" : "rgba(56,189,248,0.10)"}
+                    strokeWidth={feature.assigned || feature.selected ? 3 : 1.5}
+                    tappable={Boolean(feature.parcelId)}
+                    onPress={openParcelCard}
+                  />
+                );
+              })
+            : null}
+          {renderedGreenhouseUnits.map((unit) => {
             const assigned = isAssignedUnit(unit);
             const selected = selectedId === unit.id;
             const workflowState = unitWorkflowMap.get(unit.id)?.[activeWorkflowKind]?.state || "empty";
-            const unitColor = WORKFLOW_STATE_COLOR[workflowState];
+            const unitColor = assigned ? "#facc15" : WORKFLOW_STATE_COLOR[workflowState];
+            const unitFillColor = assigned ? "rgba(250,204,21,0.38)" : WORKFLOW_STATE_FILL[workflowState];
             const openUnitCard = () => focusUnit(unit, false);
 
             return (
@@ -844,7 +1447,7 @@ function CBSContent() {
                     key={`greenhouse-${unit.id}-${activeWorkflowKind}-${workflowState}-${selected ? "selected" : "normal"}`}
                     coordinates={unit.greenhousePolygon}
                     strokeColor={unitColor}
-                    fillColor={WORKFLOW_STATE_FILL[workflowState]}
+                    fillColor={unitFillColor}
                     strokeWidth={assigned || selected ? 3 : 2}
                     tappable
                     onPress={openUnitCard}
@@ -853,6 +1456,23 @@ function CBSContent() {
               </Fragment>
             );
           })}
+          {showKobuksRecords
+            ? renderedKobuksParcelFeatures.map((unit) => {
+                const selectKobuksRecord = () => setSelectedId(unit.id);
+
+                return (
+                  <Polygon
+                    key={`kobuks-parcel-${unit.id}`}
+                    coordinates={unit.parcelPolygon}
+                    strokeColor="#a855f7"
+                    fillColor="rgba(168,85,247,0.04)"
+                    strokeWidth={selectedId === unit.id ? 3 : 2}
+                    tappable
+                    onPress={selectKobuksRecord}
+                  />
+                );
+              })
+            : null}
           {showQgisLabels
             ? renderedUnits.map((unit) => {
                 const label = getQgisStatusLabel(unit);
@@ -864,7 +1484,7 @@ function CBSContent() {
                 return (
                   <Marker
                     key={`${unit.id}-qgis-puan`}
-                    coordinate={getCenter(unit.greenhousePolygon)}
+                    coordinate={getUnitMapCenter(unit)}
                     anchor={{ x: 0.5, y: 0.5 }}
                     tracksViewChanges={false}
                     onPress={() => focusUnit(unit, false)}
@@ -886,12 +1506,12 @@ function CBSContent() {
             </Marker>
           ) : null}
           {showStaffLocations
-            ? staffLocations.map((staff) => (
+            ? safeStaffLocations.map((staff) => (
                 <Marker
                   key={`staff-${staff.user_id}`}
                   coordinate={{
-                    latitude: Number(staff.latitude),
-                    longitude: Number(staff.longitude),
+                    latitude: staff.latitudeNumber,
+                    longitude: staff.longitudeNumber,
                   }}
                   anchor={{ x: 0.5, y: 0.5 }}
                 >
@@ -932,10 +1552,17 @@ function CBSContent() {
           {showLayerPanel ? (
             <View style={styles.layerPanel}>
               <View style={styles.layerPanelHeader}>
-                <Text style={styles.layerPanelTitle}>Katmanlar</Text>
-                <Text style={styles.layerPanelCount}>İş durumu</Text>
+                <View>
+                  <Text style={styles.layerPanelTitle}>Harita katmanları</Text>
+                  <Text style={styles.layerPanelSubtitle}>Görünür alan için canlı yönetim</Text>
+                </View>
+                <View style={styles.layerPanelBadge}>
+                  <MaterialCommunityIcons name="layers-triple-outline" color="#bbf7d0" size={15} />
+                  <Text style={styles.layerPanelCount}>CANLI</Text>
+                </View>
               </View>
               <ScrollView style={styles.layerPanelScroll} contentContainerStyle={styles.layerPanelScrollContent} nestedScrollEnabled>
+              <LayerGroupLabel label="ALTLIK VE KADASTRO" />
               <LayerPanelRow
                 active={showGoogleSatellite}
                 color="#64748b"
@@ -947,12 +1574,29 @@ function CBSContent() {
                 }}
               />
               <LayerPanelRow
+                active={showParcels}
+                color="#38bdf8"
+                icon="vector-polygon"
+                title="TKGM Parseller (yaklaşık)"
+                subtitle={`${renderedParcelFeatures.length}/${tkgmParcels.length} parsel · kamu verisi hassasiyeti düşürülmüş`}
+                onPress={toggleParcels}
+              />
+              <LayerGroupLabel label="ÜRETİM KAYITLARI" />
+              <LayerPanelRow
                 active={showGreenhouses}
                 color="#22c55e"
                 icon="greenhouse"
-                title="KOBÜKS Seralar"
-                subtitle="Kapalı üretim alanları"
+                title="Sera Poligonları"
+                subtitle={`${renderedGreenhouseUnits.length} görünür üretim alanı`}
                 onPress={toggleGreenhouses}
+              />
+              <LayerPanelRow
+                active={showKobuksRecords}
+                color="#a855f7"
+                icon="database-marker-outline"
+                title="KOBÜKS Kayıt Parselleri"
+                subtitle={String(renderedKobuksParcelFeatures.length) + " benzersiz parsel · mor sınır"}
+                onPress={toggleKobuksRecords}
               />
               <LayerPanelRow
                 active={showQgisLabels}
@@ -964,6 +1608,7 @@ function CBSContent() {
                   setShowQgisLabels((value) => !value);
                 }}
               />
+              <LayerGroupLabel label="SAHA İŞLEMLERİ" />
               <LayerPanelRow
                 active={nearbyMode}
                 color="#f59e0b"
@@ -977,11 +1622,12 @@ function CBSContent() {
                 color="#a855f7"
                 icon="account-hard-hat-outline"
                 title="Sahadaki Personel"
-                subtitle={`${staffLocations.length} aktif konum`}
+                subtitle={`${safeStaffLocations.length} aktif konum`}
                 onPress={() => {
                   setShowStaffLocations((value) => !value);
                 }}
               />
+              <LayerGroupLabel label="İŞ AKIŞI AÇIKLAMASI" />
               <LayerLegendRow color={WORKFLOW_STATE_COLOR.done} icon="check-circle-outline" title="İşlem tamamlandı" />
               <LayerLegendRow color={WORKFLOW_STATE_COLOR.partial} icon="clock-outline" title="İşlem yarıda" />
               <LayerLegendRow color={WORKFLOW_STATE_COLOR.empty} icon="close-circle-outline" title="İşlem yapılmadı" />
@@ -1000,7 +1646,7 @@ function CBSContent() {
                 </Text>
                 <Text style={styles.selectedUnitTitle}>{fixMojibake(selectedUnit.unitNo || "Ünite")}</Text>
               </View>
-              <Pressable onPress={() => setSelectedId(null)} style={styles.selectedUnitClose}>
+              <Pressable onPress={closeSelectedUnit} style={styles.selectedUnitClose}>
                 <MaterialCommunityIcons name="close" color="#cbd5e1" size={18} />
               </Pressable>
             </View>
@@ -1010,6 +1656,12 @@ function CBSContent() {
             <Text style={styles.selectedUnitMeta} numberOfLines={1}>
               {fixMojibake(selectedUnit.district || "-")} / {fixMojibake(selectedUnit.village || "-")} · {fixMojibake(selectedUnit.adaNo || "-")}/{fixMojibake(selectedUnit.parcelNo || "-")}
             </Text>
+            {isAssignedUnit(selectedUnit) ? (
+              <View style={styles.assignedUnitBadge}>
+                <MaterialCommunityIcons name="crosshairs-gps" color="#422006" size={15} />
+                <Text style={styles.assignedUnitBadgeText}>Sizin saha göreviniz — sarı poligon</Text>
+              </View>
+            ) : null}
             <View style={styles.lookupSection}>
               <Text style={styles.lookupSectionTitle}>CBS eşleşmesi</Text>
               {selectedLookupHints.map((hint) => (
@@ -1050,14 +1702,6 @@ function CBSContent() {
                 <MaterialCommunityIcons name="clipboard-text-outline" color="white" size={18} />
                 <Text style={styles.selectedUnitActionText}>Detay / Görev</Text>
               </Pressable>
-              <Pressable
-                onPress={() => openPolygonEditor(selectedUnit)}
-                style={[styles.selectedUnitAction, styles.selectedUnitPolygonAction, openingPolygon && styles.dimmedAction]}
-                disabled={openingPolygon}
-              >
-                <MaterialCommunityIcons name="shape-polygon-plus" color="white" size={18} />
-                <Text style={styles.selectedUnitActionText}>{openingPolygon ? "Açılıyor" : "Poligon Çiz"}</Text>
-              </Pressable>
             </View>
           </View>
         ) : null}
@@ -1067,7 +1711,7 @@ function CBSContent() {
 }
 
 function distanceFrom(anchor: { latitude: number; longitude: number }, unit: CbsUnit) {
-  const center = getCenter(unit.greenhousePolygon);
+  const center = getUnitMapCenter(unit);
   return Math.hypot(center.latitude - anchor.latitude, center.longitude - anchor.longitude);
 }
 
@@ -1139,6 +1783,10 @@ function LayerPanelRow({
       </View>
     </Pressable>
   );
+}
+
+function LayerGroupLabel({ label }: { label: string }) {
+  return <Text style={styles.layerGroupLabel}>{label}</Text>;
 }
 
 function LayerLegendRow({
@@ -1345,6 +1993,8 @@ const styles = StyleSheet.create({
     left: 12,
     right: 12,
     top: 66,
+    zIndex: 12,
+    elevation: 12,
     borderRadius: 8,
     backgroundColor: "rgba(15,23,42,0.96)",
     borderWidth: 1,
@@ -1390,6 +2040,22 @@ const styles = StyleSheet.create({
     color: "#cbd5e1",
     fontSize: 12,
     fontWeight: "700",
+  },
+  assignedUnitBadge: {
+    minHeight: 30,
+    borderRadius: 8,
+    backgroundColor: "#fde68a",
+    borderWidth: 1,
+    borderColor: "#facc15",
+    paddingHorizontal: 9,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  assignedUnitBadgeText: {
+    color: "#422006",
+    fontSize: 11,
+    fontWeight: "900",
   },
   lookupSection: {
     borderTopWidth: 1,
@@ -1463,9 +2129,6 @@ const styles = StyleSheet.create({
   selectedUnitDetailAction: {
     backgroundColor: "#2563eb",
   },
-  selectedUnitPolygonAction: {
-    backgroundColor: "#16a34a",
-  },
   dimmedAction: {
     opacity: 0.58,
   },
@@ -1477,6 +2140,7 @@ const styles = StyleSheet.create({
     position: "absolute",
     left: 12,
     top: 12,
+    gap: 8,
   },
   locationButton: {
     width: 44,
@@ -1512,17 +2176,21 @@ const styles = StyleSheet.create({
     borderColor: "rgba(22,163,74,0.75)",
   },
   layerPanel: {
-    width: 248,
-    maxHeight: 430,
-    borderRadius: 8,
-    backgroundColor: "rgba(15,23,42,0.96)",
+    width: 268,
+    maxHeight: 472,
+    borderRadius: 14,
+    backgroundColor: "rgba(15,23,42,0.98)",
     borderWidth: 1,
-    borderColor: "rgba(148,163,184,0.35)",
-    padding: 10,
+    borderColor: "rgba(56,189,248,0.42)",
+    padding: 12,
     gap: 8,
+    shadowColor: "#000",
+    shadowOpacity: 0.32,
+    shadowRadius: 14,
+    elevation: 9,
   },
   layerPanelScroll: {
-    maxHeight: 362,
+    maxHeight: 394,
   },
   layerPanelScrollContent: {
     gap: 8,
@@ -1533,21 +2201,50 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     gap: 10,
-    paddingBottom: 2,
+    paddingBottom: 7,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(148,163,184,0.18)",
   },
   layerPanelTitle: {
     color: "white",
-    fontWeight: "800",
+    fontWeight: "900",
+    fontSize: 14,
+  },
+  layerPanelSubtitle: {
+    color: "#94a3b8",
+    fontSize: 10,
+    fontWeight: "700",
+    marginTop: 2,
+  },
+  layerPanelBadge: {
+    minHeight: 26,
+    borderRadius: 13,
+    backgroundColor: "rgba(22,163,74,0.18)",
+    borderWidth: 1,
+    borderColor: "rgba(74,222,128,0.46)",
+    paddingHorizontal: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
   },
   layerPanelCount: {
-    color: "#94a3b8",
-    fontSize: 12,
-    fontWeight: "800",
+    color: "#bbf7d0",
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 0.5,
+  },
+  layerGroupLabel: {
+    color: "#7dd3fc",
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 0.8,
+    marginTop: 4,
+    marginLeft: 3,
   },
   layerPanelRow: {
-    minHeight: 48,
-    borderRadius: 8,
-    backgroundColor: "rgba(17,24,39,0.92)",
+    minHeight: 54,
+    borderRadius: 10,
+    backgroundColor: "rgba(17,24,39,0.96)",
     borderWidth: 1,
     borderColor: "rgba(30,41,59,0.95)",
     flexDirection: "row",
@@ -1556,8 +2253,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 9,
   },
   layerLegendRow: {
-    minHeight: 38,
-    borderRadius: 8,
+    minHeight: 42,
+    borderRadius: 10,
     backgroundColor: "rgba(17,24,39,0.72)",
     borderWidth: 1,
     borderColor: "rgba(30,41,59,0.78)",
@@ -1567,9 +2264,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 9,
   },
   layerSymbol: {
-    width: 29,
-    height: 29,
-    borderRadius: 8,
+    width: 32,
+    height: 32,
+    borderRadius: 10,
     borderWidth: 1,
     backgroundColor: "rgba(2,6,23,0.86)",
     alignItems: "center",
@@ -1581,7 +2278,7 @@ const styles = StyleSheet.create({
   layerPanelName: {
     color: "white",
     fontSize: 12,
-    fontWeight: "800",
+    fontWeight: "900",
   },
   layerPanelMeta: {
     color: "#94a3b8",

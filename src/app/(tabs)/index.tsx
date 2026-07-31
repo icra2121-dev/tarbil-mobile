@@ -6,6 +6,7 @@ import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-nati
 
 import { signOut } from "../../services/auth";
 import { DashboardStats, RecentDashboardItem, getDashboardStats } from "../../services/dashboard";
+import { getMyNotifications, markNotificationRead, type UserNotification } from "../../services/notificationInbox";
 import { canUseManagementScreens, getMyProfile } from "../../services/profile";
 import { getTasks } from "../../services/tasks";
 import { startLiveTracking } from "../../services/tracking";
@@ -121,13 +122,14 @@ export default function HomeScreen() {
   const [stats, setStats] = useState<DashboardStats>(emptyStats);
   const [profile, setProfile] = useState<any>(null);
   const [latestAssignedTask, setLatestAssignedTask] = useState<any>(null);
+  const [notifications, setNotifications] = useState<UserNotification[]>([]);
   const [workLocation, setWorkLocation] = useState({ city: "", district: "", office: "" });
 
   useFocusEffect(
     useCallback(() => {
       let active = true;
 
-      Promise.allSettled([getDashboardStats(), getMyProfile(), getTasks()]).then(([dashboardResult, profileResult, tasksResult]) => {
+      Promise.allSettled([getDashboardStats(), getMyProfile(), getTasks(), getMyNotifications()]).then(([dashboardResult, profileResult, tasksResult, notificationResult]) => {
         if (!active) {
           return;
         }
@@ -172,6 +174,8 @@ export default function HomeScreen() {
           setProfile(nextProfile);
           setWorkLocation(nextWorkLocation);
         }
+
+        setNotifications(notificationResult.status === "fulfilled" ? notificationResult.value : []);
       });
 
       return () => {
@@ -185,6 +189,25 @@ export default function HomeScreen() {
     router.replace("/login");
   }
 
+  async function openNotifications() {
+    const latest = notifications[0];
+
+    if (!latest) {
+      Alert.alert("Bildirimler", "Yeni saha bildirimi bulunmuyor.");
+      return;
+    }
+
+    await markNotificationRead(latest.id).catch(() => undefined);
+    setNotifications((current) => current.map((item) => (item.id === latest.id ? { ...item, read: true } : item)));
+
+    if (latest.task_id) {
+      router.push(`/task/${latest.task_id}` as any);
+      return;
+    }
+
+    Alert.alert(latest.title || "Bildirim", latest.body || "Yeni bildirim var.");
+  }
+
   const initials = useMemo(() => {
     const name = profile?.full_name || profile?.email || "İZ";
     return String(name)
@@ -196,6 +219,7 @@ export default function HomeScreen() {
   }, [profile]);
 
   const management = canUseManagementScreens(profile);
+  const unreadNotificationCount = notifications.filter((item) => item.read !== true).length;
   const workLocationTitle =
     workLocation.city && workLocation.district
       ? `${workLocation.city} / ${workLocation.district}`
@@ -224,8 +248,13 @@ export default function HomeScreen() {
           <Text style={styles.operatorRole}>Rol: {profile?.title || profile?.role || "denetçi"}</Text>
         </View>
         <View style={styles.operatorActions}>
-          <Pressable onPress={() => Alert.alert("Bildirimler", "Yeni saha bildirimi bulunmuyor.")} style={styles.smallButton}>
+          <Pressable onPress={openNotifications} style={styles.smallButton}>
             <MaterialCommunityIcons name="bell-outline" color="white" size={16} />
+            {unreadNotificationCount ? (
+              <View style={styles.notificationBadge}>
+                <Text style={styles.notificationBadgeText}>{unreadNotificationCount > 9 ? "9+" : unreadNotificationCount}</Text>
+              </View>
+            ) : null}
           </Pressable>
           <Pressable onPress={logout} style={[styles.smallButton, styles.logoutButton]}>
             <MaterialCommunityIcons name="logout" color="white" size={16} />
@@ -514,6 +543,25 @@ const styles = StyleSheet.create({
     backgroundColor: "#1e293b",
     alignItems: "center",
     justifyContent: "center",
+  },
+  notificationBadge: {
+    position: "absolute",
+    top: -5,
+    right: -5,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: "#ef4444",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 4,
+    borderWidth: 1,
+    borderColor: "#020617",
+  },
+  notificationBadgeText: {
+    color: "white",
+    fontSize: 10,
+    fontWeight: "900",
   },
   logoutButton: {
     backgroundColor: "#991b1b",

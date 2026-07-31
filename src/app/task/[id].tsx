@@ -4,7 +4,7 @@ import * as FileSystem from "expo-file-system/legacy";
 import * as Linking from "expo-linking";
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import * as Sharing from "expo-sharing";
-import { useCallback, useRef, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -21,14 +21,14 @@ import {
 import { supabase } from "../../lib/supabase";
 import { BottomTabMenu } from "../../components/BottomTabMenu";
 import { PRODUCT_OPTIONS, getProductVarietyOptions } from "../../data/products";
-import { getCenter, parsePolygon, type MapPoint } from "../../services/cbs";
-import { assignTaskToInspector } from "../../services/assignments";
+import { getCenter, loadCbsUnits, parsePolygon, type CbsUnit, type MapPoint } from "../../services/cbs";
+import { assignTaskToInspector, assignUnitsToInspector } from "../../services/assignments";
 import { getLatestEk8ReportForTask, shareEk8ReportPdf } from "../../services/ek8Report";
 import { updateTaskOnlineOrQueue } from "../../services/offline";
 import { exportTaskPdf } from "../../services/pdfExport";
 import { getMyProfile, isAdmin } from "../../services/profile";
 import { getTaskById } from "../../services/taskDetail";
-import { deleteTaskById } from "../../services/tasks";
+import { cancelTask, deleteTaskById, reactivateCancelledTask } from "../../services/tasks";
 import { fixMojibake } from "../../utils/text";
 import {
   getTaskStatus,
@@ -332,17 +332,39 @@ function mergeAssignableUsers(users: any[], profile: any, task: any) {
   return [...map.values()].sort((first, second) => getProfileName(first).localeCompare(getProfileName(second), "tr"));
 }
 
+function getProducerUnits(task: any, units: CbsUnit[]) {
+  const tcNo = String(task?.tc_no || task?.producer_tc || "").replace(/\D/g, "");
+  const producerName = fixMojibake(task?.producer_name || "").trim().toLocaleLowerCase("tr-TR");
+
+  return units.filter((unit) => {
+    const unitTc = String(unit.producerTc || "").replace(/\D/g, "");
+
+    if (tcNo && unitTc) {
+      return tcNo === unitTc;
+    }
+
+    return Boolean(
+      producerName &&
+        fixMojibake(unit.producerName || "").trim().toLocaleLowerCase("tr-TR") === producerName,
+    );
+  });
+}
+
 export default function TaskDetailScreen() {
   const { id } = useLocalSearchParams();
   const initializedTaskIdRef = useRef("");
   const [task, setTask] = useState<any>(null);
   const [evidence, setEvidence] = useState<any[]>([]);
   const [inspectors, setInspectors] = useState<any[]>([]);
+  const [producerUnits, setProducerUnits] = useState<CbsUnit[]>([]);
+  const [selectedProducerUnitIds, setSelectedProducerUnitIds] = useState<string[]>([]);
   const [selectedInspector, setSelectedInspector] = useState("");
   const [profile, setProfile] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [assigning, setAssigning] = useState(false);
+  const [batchAssigning, setBatchAssigning] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [reactivating, setReactivating] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [cropMatches, setCropMatches] = useState<"same" | "different" | "">("");
   const [manualFields, setManualFields] = useState<Record<string, string>>({});
@@ -408,6 +430,44 @@ export default function TaskDetailScreen() {
     };
   }, [id, loadEvidence, loadAssignableUsers]),
   );
+
+  useEffect(() => {
+    let active = true;
+    const query = String(task?.tc_no || task?.producer_tc || task?.producer_name || "").trim();
+
+    if (!query) {
+      return () => {
+        active = false;
+      };
+    }
+
+    loadCbsUnits({ kobuksQuery: query, kobuksLimit: 250 })
+      .then((units) => {
+        if (!active) {
+          return;
+        }
+
+        const matchingUnits = getProducerUnits(task, units);
+        const currentUnit = matchingUnits.find(
+          (unit) =>
+            (task?.greenhouse_unit_id && String(unit.greenhouseUnitId) === String(task.greenhouse_unit_id)) ||
+            (task?.unit_no && String(unit.unitNo) === String(task.unit_no)),
+        );
+
+        setProducerUnits(matchingUnits);
+        setSelectedProducerUnitIds(currentUnit ? [currentUnit.id] : []);
+      })
+      .catch(() => {
+        if (active) {
+          setProducerUnits([]);
+          setSelectedProducerUnitIds([]);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [task]);
 
   const management = isAdmin(profile) || profile?.role === "manager";
   const currentStatus = getTaskStatus(task);
@@ -521,6 +581,49 @@ export default function TaskDetailScreen() {
     }
   }
 
+  function toggleProducerUnit(unitId: string) {
+    setSelectedProducerUnitIds((current) =>
+      current.includes(unitId)
+        ? current.filter((id) => id !== unitId)
+        : [...current, unitId],
+    );
+  }
+
+  async function assignSelectedProducerUnits() {
+    const inspector = inspectors.find((item) => String(item.id) === String(selectedInspector));
+    const selectedUnits = producerUnits.filter((unit) => selectedProducerUnitIds.includes(unit.id));
+
+    if (!inspector) {
+      Alert.alert("Denetçi seçin", "Toplu atama için önce denetçiyi seçin.");
+      return;
+    }
+
+    if (!selectedUnits.length) {
+      Alert.alert("Ünite seçin", "Görev atanacak en az bir ünite seçin.");
+      return;
+    }
+
+    setBatchAssigning(true);
+
+    try {
+      const result = await assignUnitsToInspector(selectedUnits, inspector, workflowKind);
+      const message = [
+        `${result.assigned.length} ünite için görev atandı.`,
+        result.failed.length ? `${result.failed.length} ünite atanamadı.` : "",
+        ...result.failed.slice(0, 3).map((item) => `${item.unit.unitNo}: ${item.error}`),
+      ]
+        .filter(Boolean)
+        .join("\n");
+
+      Alert.alert(result.failed.length ? "Atama kısmen tamamlandı" : "Toplu atama tamamlandı", message);
+      await loadTask();
+    } catch (error: any) {
+      Alert.alert("Toplu atama yapılamadı", error?.message || "Ünite görevleri atanamadı.");
+    } finally {
+      setBatchAssigning(false);
+    }
+  }
+
   async function updateStatus(status: string) {
     const payload = { workflow_status: status, status };
     const result = await updateTaskOnlineOrQueue(id, payload, `Görev durumu: ${status}`);
@@ -550,28 +653,37 @@ export default function TaskDetailScreen() {
           setCancelling(true);
 
           try {
-            const taskId = String(Array.isArray(id) ? id[0] : id || "");
-            const result = await supabase
-              .from("tasks")
-              .update({
-                workflow_status: taskStatuses.cancelled,
-                status: taskStatuses.cancelled,
-                compliance_result: task?.compliance_result || "Admin tarafından iptal edildi",
-              })
-              .eq("id", taskId)
-              .select("*")
-              .single();
-
-            if (result.error) {
-              throw result.error;
-            }
-
-            setTask(result.data);
+            const nextTask = await cancelTask(id, profile?.id || null, task?.compliance_result);
+            setTask(nextTask);
             Alert.alert("İptal edildi", "Denetim iptal edildi olarak güncellendi.");
           } catch (error: any) {
             Alert.alert("İptal edilemedi", error?.message || "Denetim durumu güncellenemedi.");
           } finally {
             setCancelling(false);
+          }
+        },
+      },
+    ]);
+  }
+
+  async function reactivateInspection() {
+    Alert.alert("Görevi yeniden aktifleştir", "İptal kaydı korunacak; görev yeniden atama veya saha akışına dönecek.", [
+      { text: "Vazgeç", style: "cancel" },
+      {
+        text: "Aktifleştir",
+        onPress: async () => {
+          setReactivating(true);
+
+          try {
+            const nextTask = await reactivateCancelledTask(id);
+            setTask(nextTask);
+            setFieldMode(getTaskWorkflowKind(nextTask));
+            setManualFields(buildManualFields(nextTask, getTaskWorkflowKind(nextTask)));
+            Alert.alert("Aktifleştirildi", "Denetim yeniden aktif duruma alındı.");
+          } catch (error: any) {
+            Alert.alert("Aktifleştirilemedi", error?.message || "Denetim yeniden aktif edilemedi.");
+          } finally {
+            setReactivating(false);
           }
         },
       },
@@ -961,6 +1073,23 @@ export default function TaskDetailScreen() {
     Linking.openURL(`google.navigation:q=${target.latitude},${target.longitude}`);
   }
 
+  function openTaskOnCbs() {
+    router.push({
+      pathname: "/cbs",
+      params: {
+        task_id: String(task?.id || id || ""),
+        workflow: workflowKind,
+        unit_no: String(task?.unit_no || ""),
+        ada_no: String(task?.ada_no || ""),
+        parcel_no: String(task?.parcel_no || ""),
+        latitude: String(task?.latitude || ""),
+        longitude: String(task?.longitude || ""),
+        parcel_polygon: task?.parcel_polygon ? JSON.stringify(task.parcel_polygon) : "",
+        greenhouse_polygon: task?.greenhouse_polygon ? JSON.stringify(task.greenhouse_polygon) : "",
+      },
+    } as any);
+  }
+
   function callProducer() {
     if (!task?.phone) {
       Alert.alert("Telefon yok", "Üretici telefon bilgisi bulunamadı.");
@@ -1047,6 +1176,12 @@ export default function TaskDetailScreen() {
           <MaterialCommunityIcons name="navigation-variant-outline" color="white" size={18} />
           <Text style={styles.actionText}>Navigasyon</Text>
         </Pressable>
+        {!management && canInspectTask ? (
+          <Pressable onPress={openTaskOnCbs} style={styles.cbsButton}>
+            <MaterialCommunityIcons name="map-search-outline" color="#111827" size={18} />
+            <Text style={styles.cbsActionText}>CBS’de Göster</Text>
+          </Pressable>
+        ) : null}
       </View>
 
       {!management && !canInspectTask ? (
@@ -1119,6 +1254,68 @@ export default function TaskDetailScreen() {
                   Seçilen kullanıcı: {getProfileName(selectedInspectorProfile)} ({getProfileRole(selectedInspectorProfile)})
                 </Text>
               ) : null}
+              {producerUnits.length > 1 ? (
+                <View style={styles.producerUnitsBox}>
+                  <View style={styles.producerUnitsHeader}>
+                    <View style={styles.producerUnitsHeaderText}>
+                      <Text style={styles.producerUnitsTitle}>Üreticinin üniteleri</Text>
+                      <Text style={styles.producerUnitsMeta}>
+                        {selectedProducerUnitIds.length}/{producerUnits.length} ünite seçili
+                      </Text>
+                    </View>
+                    <Pressable
+                      onPress={() =>
+                        setSelectedProducerUnitIds(
+                          selectedProducerUnitIds.length === producerUnits.length
+                            ? []
+                            : producerUnits.map((unit) => unit.id),
+                        )
+                      }
+                      style={styles.selectAllUnitsButton}
+                    >
+                      <Text style={styles.selectAllUnitsText}>
+                        {selectedProducerUnitIds.length === producerUnits.length ? "Temizle" : "Tümünü seç"}
+                      </Text>
+                    </Pressable>
+                  </View>
+                  {producerUnits.map((unit) => {
+                    const selected = selectedProducerUnitIds.includes(unit.id);
+
+                    return (
+                      <Pressable
+                        key={unit.id}
+                        onPress={() => toggleProducerUnit(unit.id)}
+                        style={[styles.producerUnitRow, selected && styles.producerUnitRowSelected]}
+                      >
+                        <MaterialCommunityIcons
+                          name={selected ? "checkbox-marked-circle" : "checkbox-blank-circle-outline"}
+                          color={selected ? "#22c55e" : "#64748b"}
+                          size={20}
+                        />
+                        <View style={styles.producerUnitText}>
+                          <Text style={styles.producerUnitTitle}>{fixMojibake(unit.unitNo || "Ünite")}</Text>
+                          <Text style={styles.producerUnitMeta}>
+                            {fixMojibake(unit.adaNo || "-")}/{fixMojibake(unit.parcelNo || "-")} · {fixMojibake(unit.crop || "-")}
+                          </Text>
+                        </View>
+                      </Pressable>
+                    );
+                  })}
+                  <Pressable
+                    onPress={assignSelectedProducerUnits}
+                    style={[
+                      styles.batchAssignButton,
+                      (!selectedInspector || !selectedProducerUnitIds.length || batchAssigning) && styles.dimmedButton,
+                    ]}
+                    disabled={!selectedInspector || !selectedProducerUnitIds.length || batchAssigning}
+                  >
+                    <MaterialCommunityIcons name="account-multiple-check-outline" color="white" size={18} />
+                    <Text style={styles.buttonText}>
+                      {batchAssigning ? "Üniteler atanıyor..." : "Seçilen ünitelere görev ata"}
+                    </Text>
+                  </Pressable>
+                </View>
+              ) : null}
               <Pressable
                 onPress={assignInspector}
                 style={[styles.blueButton, (!selectedInspector || assigning || assignmentMissingItems.length > 0) && styles.dimmedButton]}
@@ -1132,6 +1329,12 @@ export default function TaskDetailScreen() {
             <Pressable onPress={cancelInspection} style={[styles.cancelButton, cancelling && styles.dimmedButton]} disabled={cancelling}>
               <MaterialCommunityIcons name="close-octagon-outline" color="white" size={18} />
               <Text style={styles.buttonText}>{cancelling ? "İptal ediliyor..." : "Görevi İptal Et"}</Text>
+            </Pressable>
+          ) : null}
+          {inspectionCancelled ? (
+            <Pressable onPress={reactivateInspection} style={[styles.blueButton, reactivating && styles.dimmedButton]} disabled={reactivating}>
+              <MaterialCommunityIcons name="restore" color="white" size={18} />
+              <Text style={styles.buttonText}>{reactivating ? "Aktifleştiriliyor..." : "Görevi Yeniden Aktifleştir"}</Text>
             </Pressable>
           ) : null}
           {inspectionCancelled ? (
@@ -1716,7 +1919,18 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 8,
   },
+  cbsButton: {
+    flex: 1,
+    minHeight: 48,
+    borderRadius: 8,
+    backgroundColor: "#facc15",
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 6,
+  },
   actionText: { color: "white", fontWeight: "800" },
+  cbsActionText: { color: "#111827", fontWeight: "900", fontSize: 12 },
   roleNotice: {
     minHeight: 48,
     borderRadius: 8,
@@ -1768,6 +1982,57 @@ const styles = StyleSheet.create({
   assignmentLabel: { color: "#38bdf8", fontSize: 11, fontWeight: "800" },
   assignmentValue: { color: "white", marginTop: 5, fontWeight: "800" },
   assignmentHint: { color: "#cbd5e1", fontWeight: "700", lineHeight: 18 },
+  producerUnitsBox: {
+    borderWidth: 1,
+    borderColor: "#334155",
+    borderRadius: 8,
+    backgroundColor: "#0f172a",
+    padding: 10,
+    gap: 8,
+  },
+  producerUnitsHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  producerUnitsHeaderText: { flex: 1 },
+  producerUnitsTitle: { color: "white", fontWeight: "900" },
+  producerUnitsMeta: { color: "#94a3b8", fontSize: 12, marginTop: 2 },
+  selectAllUnitsButton: {
+    minHeight: 34,
+    borderRadius: 8,
+    backgroundColor: "#1e293b",
+    justifyContent: "center",
+    paddingHorizontal: 10,
+  },
+  selectAllUnitsText: { color: "#bfdbfe", fontSize: 12, fontWeight: "900" },
+  producerUnitRow: {
+    minHeight: 48,
+    borderWidth: 1,
+    borderColor: "#1e293b",
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+  },
+  producerUnitRowSelected: {
+    borderColor: "#22c55e",
+    backgroundColor: "rgba(20,83,45,0.42)",
+  },
+  producerUnitText: { flex: 1 },
+  producerUnitTitle: { color: "white", fontWeight: "900" },
+  producerUnitMeta: { color: "#94a3b8", fontSize: 11, marginTop: 2 },
+  batchAssignButton: {
+    minHeight: 44,
+    borderRadius: 8,
+    backgroundColor: "#16a34a",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+  },
   emptyAssignableList: {
     minHeight: 52,
     borderRadius: 8,
