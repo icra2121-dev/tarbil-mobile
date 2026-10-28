@@ -992,7 +992,7 @@ export default function TaskDetailScreen() {
     setClosingAction("report");
 
     try {
-      const { saved } = await exportTaskPdf(task, { share: false });
+      const { saved } = await exportTaskPdf({ ...task, evidence }, { share: false });
       await updateStatus(taskStatuses.reportCreated);
 
       Alert.alert(
@@ -1031,7 +1031,7 @@ export default function TaskDetailScreen() {
       }
 
       if (!sharedExistingReport) {
-        await exportTaskPdf(task);
+        await exportTaskPdf({ ...task, evidence });
       }
       await updateStatus(taskStatuses.reportDownloaded);
     } catch (error: any) {

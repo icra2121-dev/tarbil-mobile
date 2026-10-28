@@ -74,6 +74,46 @@ function pointText(points: MapPoint[], index: number) {
   return point ? `${formatCoord(point.latitude)}, ${formatCoord(point.longitude)}` : "";
 }
 
+function cornerLabel(index: number) {
+  return String.fromCharCode(65 + index);
+}
+
+function buildSketchSvg(parcelPoints: MapPoint[], greenhousePoints: MapPoint[]) {
+  const allPoints = [...parcelPoints, ...greenhousePoints];
+
+  if (!allPoints.length) {
+    return '<div class="sketch-empty">Sera köşe koordinatları kaydedildiğinde kroki burada gösterilir.</div>';
+  }
+
+  const minLat = Math.min(...allPoints.map((point) => point.latitude));
+  const maxLat = Math.max(...allPoints.map((point) => point.latitude));
+  const minLng = Math.min(...allPoints.map((point) => point.longitude));
+  const maxLng = Math.max(...allPoints.map((point) => point.longitude));
+  const latSpan = maxLat - minLat || 0.00001;
+  const lngSpan = maxLng - minLng || 0.00001;
+  const project = (point: MapPoint) => ({
+    x: 12 + ((point.longitude - minLng) / lngSpan) * 176,
+    y: 10 + ((maxLat - point.latitude) / latSpan) * 62,
+  });
+  const pointsAttribute = (points: MapPoint[]) =>
+    points.map((point) => {
+      const projected = project(point);
+      return `${projected.x.toFixed(1)},${projected.y.toFixed(1)}`;
+    }).join(" ");
+  const parcel = parcelPoints.length >= 3
+    ? `<polygon points="${pointsAttribute(parcelPoints)}" fill="#e5e7eb" stroke="#64748b" stroke-width="1.5" stroke-dasharray="4 3" />`
+    : "";
+  const greenhouse = greenhousePoints.length >= 3
+    ? `<polygon points="${pointsAttribute(greenhousePoints)}" fill="#bbf7d0" stroke="#15803d" stroke-width="2" />`
+    : "";
+  const labels = greenhousePoints.map((point, index) => {
+    const projected = project(point);
+    const label = cornerLabel(index).toLocaleLowerCase("tr-TR");
+    return `<circle cx="${projected.x}" cy="${projected.y}" r="2.4" fill="#166534" /><text x="${projected.x + 3}" y="${projected.y - 3}" font-size="7" fill="#14532d">${label}</text>`;
+  }).join("");
+  return `<svg viewBox="0 0 200 82" role="img" aria-label="Koordinatlara göre sera krokisi" preserveAspectRatio="xMidYMid meet">${parcel}${greenhouse}${labels}</svg>`;
+}
+
 function identityDigits(value: unknown) {
   const digits = clean(value, "").replace(/\D/g, "").slice(0, 11).split("");
   const cells = Array.from({ length: 11 }, (_, index) => `<td class="id-digit">${digits[index] || ""}</td>`).join("");
@@ -85,6 +125,27 @@ function normalizeTaskPolygon(value: unknown, center: MapPoint) {
     latitude: Number(point.latitude),
     longitude: Number(point.longitude),
   }));
+}
+
+function getPhotoCornerPoints(task: any): MapPoint[] {
+  const evidence = Array.isArray(task?.evidence)
+    ? task.evidence
+        .filter((item: any) => /^[a-z]$/i.test(String(item?.corner_label || "")))
+        .sort((first: any, second: any) =>
+          String(first.corner_label).localeCompare(String(second.corner_label), "en", { sensitivity: "base" }),
+        )
+    : [];
+  return evidence
+    .map((item: any) => ({
+      latitude: Number(item?.latitude),
+      longitude: Number(item?.longitude),
+    }))
+    .filter((point: MapPoint) =>
+      Number.isFinite(point.latitude) &&
+      Number.isFinite(point.longitude) &&
+      Math.abs(point.latitude) <= 90 &&
+      Math.abs(point.longitude) <= 180,
+    );
 }
 
 function getDescriptionValue(description: unknown, labels: string[]) {
@@ -118,6 +179,8 @@ export function buildTaskEk8Source(task: any): Ek8Source {
   };
   const parcelPolygon = normalizeTaskPolygon(task?.parcel_polygon, center);
   const greenhousePolygon = normalizeTaskPolygon(task?.greenhouse_polygon, center);
+  const photoCornerPoints = getPhotoCornerPoints(task);
+  const reportGreenhousePoints = photoCornerPoints.length >= 3 ? photoCornerPoints : greenhousePolygon;
 
   return {
     id: String(task?.id || ""),
@@ -146,7 +209,7 @@ export function buildTaskEk8Source(task: any): Ek8Source {
       getDescriptionValue(task?.description, ["Hasat Başlama Tarihi", "Hasat Tarihleri", "Hasat Başlangıç Tarihi"]),
     productionAmount: task?.production_amount || getDescriptionValue(task?.description, ["Miktar", "Üretim Miktarı"]),
     parcelPolygon,
-    greenhousePolygon,
+    greenhousePolygon: reportGreenhousePoints,
   };
 }
 
@@ -198,12 +261,9 @@ export function buildOfficialEk8Html(source: Ek8Source) {
           .main { margin-top: 18px; }
           .main th { height: 78px; font-size: 10px; line-height: 1.1; }
           .main td { height: 18px; text-align: center; }
-          .mapbox { height: 86px; margin-top: 20px; border: 1px solid #000; position: relative; }
-          .mapbox span { position: absolute; font-size: 12px; }
-          .a { left: 16%; top: 20%; } .aa { left: 24%; top: 20%; }
-          .b { left: 65%; top: 20%; } .bb { left: 74%; top: 20%; }
-          .c { left: 16%; top: 72%; } .cc { left: 24%; top: 72%; }
-          .d { left: 65%; top: 72%; } .dd { left: 74%; top: 72%; }
+          .mapbox { height: 86px; margin-top: 20px; border: 1px solid #000; display: flex; align-items: center; justify-content: center; }
+          .mapbox svg { width: 100%; height: 100%; }
+          .sketch-empty { color: #555; font-size: 10px; text-align: center; padding-top: 34px; }
           .coords td { height: 15px; padding: 1px 5px; }
           .coords .label { width: 43%; font-weight: 700; }
           .coords .value { width: 57%; }
@@ -293,10 +353,7 @@ export function buildOfficialEk8Html(source: Ek8Source) {
           </table>
 
           <div class="mapbox">
-            <span class="a">A</span><span class="aa">a</span>
-            <span class="b">b</span><span class="bb">B</span>
-            <span class="c">C</span><span class="cc">c</span>
-            <span class="d">d</span><span class="dd">D</span>
+            ${buildSketchSvg(source.parcelPolygon, source.greenhousePolygon)}
           </div>
 
           <table class="coords">
@@ -312,22 +369,14 @@ export function buildOfficialEk8Html(source: Ek8Source) {
               <td class="label">Ada No</td><td class="value">${escapeHtml(source.adaNo)}</td>
               <td class="label">Parsel No</td><td class="value">${escapeHtml(source.parcelNo)}</td>
             </tr>
-            <tr>
-              <td class="label">Parsel Köşe Nokta Koordinat Değeri (A)</td><td class="value">${escapeHtml(pointText(source.parcelPolygon, 0), "")}</td>
-              <td class="label">Ünite Köşe Nokta Koordinat Değeri (a)</td><td class="value">${escapeHtml(pointText(source.greenhousePolygon, 0), "")}</td>
-            </tr>
-            <tr>
-              <td class="label">Parsel Köşe Nokta Koordinat Değeri (B)</td><td class="value">${escapeHtml(pointText(source.parcelPolygon, 1), "")}</td>
-              <td class="label">Ünite Köşe Nokta Koordinat Değeri (b)</td><td class="value">${escapeHtml(pointText(source.greenhousePolygon, 1), "")}</td>
-            </tr>
-            <tr>
-              <td class="label">Parsel Köşe Nokta Koordinat Değeri (C)</td><td class="value">${escapeHtml(pointText(source.parcelPolygon, 2), "")}</td>
-              <td class="label">Ünite Köşe Nokta Koordinat Değeri (c)</td><td class="value">${escapeHtml(pointText(source.greenhousePolygon, 2), "")}</td>
-            </tr>
-            <tr>
-              <td class="label">Parsel Köşe Nokta Koordinat Değeri (D)</td><td class="value">${escapeHtml(pointText(source.parcelPolygon, 3), "")}</td>
-              <td class="label">Ünite Köşe Nokta Koordinat Değeri (d)</td><td class="value">${escapeHtml(pointText(source.greenhousePolygon, 3), "")}</td>
-            </tr>
+            ${Array.from({ length: Math.max(4, source.parcelPolygon.length, source.greenhousePolygon.length) }, (_, index) => `
+              <tr>
+                <td class="label">Parsel Köşe Nokta Koordinat Değeri (${cornerLabel(index)})</td>
+                <td class="value">${escapeHtml(pointText(source.parcelPolygon, index), "")}</td>
+                <td class="label">Sera Köşe Nokta Koordinat Değeri (${cornerLabel(index).toLocaleLowerCase("tr-TR")})</td>
+                <td class="value">${escapeHtml(pointText(source.greenhousePolygon, index), "")}</td>
+              </tr>
+            `).join("")}
           </table>
 
           <div class="note">

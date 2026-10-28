@@ -49,7 +49,7 @@ async function getEvidenceTaskTarget(taskId: string) {
   }
 }
 
-export async function uploadTaskEvidencePhoto(taskId: unknown, uri: string) {
+export async function uploadTaskEvidencePhoto(taskId: unknown, uri: string, cornerLabel?: string) {
   const normalizedTaskId = String(Array.isArray(taskId) ? taskId[0] : taskId || "");
 
   if (!normalizedTaskId) {
@@ -68,6 +68,7 @@ export async function uploadTaskEvidencePhoto(taskId: unknown, uri: string) {
     latitude: location.latitude,
     longitude: location.longitude,
     uploaded_by: uploadedBy,
+    corner_label: /^[a-h]$/i.test(String(cornerLabel || "")) ? String(cornerLabel).toLowerCase() : null,
   };
   const online = await isDeviceOnline();
 
@@ -126,8 +127,18 @@ export async function uploadTaskEvidencePhoto(taskId: unknown, uri: string) {
     latitude: location.latitude,
     longitude: location.longitude,
     uploaded_by: uploadedBy,
+    corner_label: /^[a-h]$/i.test(String(cornerLabel || "")) ? String(cornerLabel).toLowerCase() : null,
   };
-  const evidenceResult = await supabase.from("task_evidence").insert(evidencePayload).select().maybeSingle();
+  let evidenceResult = await supabase.from("task_evidence").insert(evidencePayload).select().maybeSingle();
+
+  if (evidenceResult.error && /corner_label|schema cache|pgrst204|column .* does not exist/i.test(
+    [evidenceResult.error.message, evidenceResult.error.details, evidenceResult.error.hint, evidenceResult.error.code]
+      .filter(Boolean)
+      .join(" "),
+  )) {
+    const { corner_label: _cornerLabel, ...legacyPayload } = evidencePayload;
+    evidenceResult = await supabase.from("task_evidence").insert(legacyPayload).select().maybeSingle();
+  }
 
   if (evidenceResult.error) {
     if (isNetworkError(evidenceResult.error)) {

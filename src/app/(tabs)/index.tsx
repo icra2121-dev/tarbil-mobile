@@ -263,23 +263,6 @@ export default function HomeScreen() {
       </View>
 
       {management ? (
-        <View style={styles.workflowPanel}>
-          <View style={styles.sectionHeader}>
-            <View style={styles.sectionHeaderText}>
-              <Text style={styles.sectionTitle}>Görev Yönetimi</Text>
-            </View>
-            <MaterialCommunityIcons name="clipboard-plus-outline" color="#38bdf8" size={23} />
-          </View>
-          <View style={styles.adminActionGrid}>
-            <Pressable onPress={() => router.push("/new-task" as any)} style={styles.adminActionButton}>
-              <MaterialCommunityIcons name="clipboard-plus-outline" color="white" size={20} />
-              <Text style={styles.adminActionText}>Görev Oluştur</Text>
-            </Pressable>
-          </View>
-        </View>
-      ) : null}
-
-      {management ? (
         <View style={styles.statsGrid}>
           <StatCard
             label="Açık görev"
@@ -337,6 +320,11 @@ export default function HomeScreen() {
         <View style={styles.quickActionsGrid}>
           {management ? (
             <>
+              <DashboardQuickAction
+                label="Görev Oluştur"
+                icon="clipboard-plus-outline"
+                onPress={() => router.push("/new-task" as any)}
+              />
               <DashboardQuickAction
                 label="Denetimler"
                 icon="clipboard-check-outline"
