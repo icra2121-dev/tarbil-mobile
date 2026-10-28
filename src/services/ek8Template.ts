@@ -27,6 +27,7 @@ type Ek8Source = {
   productionAmount?: unknown;
   parcelPolygon: MapPoint[];
   greenhousePolygon: MapPoint[];
+  greenhouseCoordinatePoints?: MapPoint[];
 };
 
 function clean(value: unknown, fallback = "-") {
@@ -218,7 +219,8 @@ export function buildTaskEk8Source(task: any): Ek8Source {
       getDescriptionValue(task?.description, ["Hasat Başlama Tarihi", "Hasat Tarihleri", "Hasat Başlangıç Tarihi"]),
     productionAmount: task?.production_amount || getDescriptionValue(task?.description, ["Miktar", "Üretim Miktarı"]),
     parcelPolygon,
-    greenhousePolygon: reportGreenhousePoints,
+    greenhousePolygon,
+    greenhouseCoordinatePoints: reportGreenhousePoints,
   };
 }
 
@@ -239,6 +241,7 @@ export function buildUnitEk8Source(unit: CbsUnit): Ek8Source {
     crop: unit.crop,
     parcelPolygon: unit.parcelPolygon,
     greenhousePolygon: unit.greenhousePolygon,
+    greenhouseCoordinatePoints: unit.greenhousePolygon,
   };
 }
 
@@ -362,7 +365,7 @@ export function buildOfficialEk8Html(source: Ek8Source) {
           </table>
 
           <div class="mapbox">
-            ${buildSketchSvg(source.parcelPolygon, source.greenhousePolygon)}
+            ${buildSketchSvg(source.parcelPolygon, source.greenhousePolygon.length >= 3 ? source.greenhousePolygon : source.greenhouseCoordinatePoints || [])}
           </div>
 
           <table class="coords">
@@ -383,7 +386,7 @@ export function buildOfficialEk8Html(source: Ek8Source) {
                 <td class="label">Parsel Köşe Nokta Koordinat Değeri (${cornerLabel(index)})</td>
                 <td class="value">${escapeHtml(pointText(source.parcelPolygon, index), "")}</td>
                 <td class="label">Sera Köşe Nokta Koordinat Değeri (${cornerLabel(index).toLocaleLowerCase("tr-TR")})</td>
-                <td class="value">${escapeHtml(pointText(source.greenhousePolygon, index), "")}</td>
+                <td class="value">${escapeHtml(pointText(source.greenhouseCoordinatePoints || source.greenhousePolygon, index), "")}</td>
               </tr>
             `).join("")}
           </table>
