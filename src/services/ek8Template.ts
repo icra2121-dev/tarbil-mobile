@@ -127,25 +127,27 @@ function normalizeTaskPolygon(value: unknown, center: MapPoint) {
   }));
 }
 
-function getPhotoCornerPoints(task: any): MapPoint[] {
-  const evidence = Array.isArray(task?.evidence)
-    ? task.evidence
-        .filter((item: any) => /^[a-z]$/i.test(String(item?.corner_label || "")))
-        .sort((first: any, second: any) =>
-          String(first.corner_label).localeCompare(String(second.corner_label), "en", { sensitivity: "base" }),
-        )
-    : [];
-  return evidence
-    .map((item: any) => ({
-      latitude: Number(item?.latitude),
-      longitude: Number(item?.longitude),
-    }))
-    .filter((point: MapPoint) =>
+function getPhotoCornerPoints(task: any, fallbackPoints: MapPoint[]): MapPoint[] {
+  const evidence = Array.isArray(task?.evidence) ? task.evidence : [];
+  const photoPoints = new Map<number, MapPoint>();
+  evidence.forEach((item: any) => {
+    const label = String(item?.corner_label || "").toLowerCase();
+    if (!/^[a-h]$/.test(label)) return;
+    const point = { latitude: Number(item.latitude), longitude: Number(item.longitude) };
+    if (
       Number.isFinite(point.latitude) &&
       Number.isFinite(point.longitude) &&
       Math.abs(point.latitude) <= 90 &&
-      Math.abs(point.longitude) <= 180,
-    );
+      Math.abs(point.longitude) <= 180
+    ) {
+      photoPoints.set(label.charCodeAt(0) - 97, point);
+    }
+  });
+
+  const lastPhotoIndex = photoPoints.size ? Math.max(...photoPoints.keys()) : -1;
+  const pointCount = Math.max(fallbackPoints.length, lastPhotoIndex + 1);
+  return Array.from({ length: pointCount }, (_, index) => photoPoints.get(index) || fallbackPoints[index])
+    .filter((point): point is MapPoint => Boolean(point));
 }
 
 function getDescriptionValue(description: unknown, labels: string[]) {
@@ -179,7 +181,7 @@ export function buildTaskEk8Source(task: any): Ek8Source {
   };
   const parcelPolygon = normalizeTaskPolygon(task?.parcel_polygon, center);
   const greenhousePolygon = normalizeTaskPolygon(task?.greenhouse_polygon, center);
-  const photoCornerPoints = getPhotoCornerPoints(task);
+  const photoCornerPoints = getPhotoCornerPoints(task, greenhousePolygon);
   const reportGreenhousePoints = photoCornerPoints.length >= 3 ? photoCornerPoints : greenhousePolygon;
 
   return {
