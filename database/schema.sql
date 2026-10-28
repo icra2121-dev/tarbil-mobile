@@ -129,6 +129,7 @@ create table if not exists task_evidence (
   latitude numeric,
   longitude numeric,
   uploaded_by uuid,
+  corner_label text,
   created_at timestamptz not null default now()
 );
 
