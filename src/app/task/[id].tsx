@@ -945,21 +945,18 @@ export default function TaskDetailScreen() {
       return;
     }
 
-    setClosingAction("kobuks");
-
-    try {
-      const result = await updateStatus(taskStatuses.kobuksSynced);
-      Alert.alert(
-        result.queued ? "Sıraya alındı" : "Aktarıldı",
-        result.queued
-          ? "KOBÜKS aktarımı internet geldiğinde sisteme aktarılacak."
-          : "Saha kaydı KOBÜKS'e aktarıldı. İş akışı tamamlandı.",
-      );
-    } catch (error: any) {
-      Alert.alert("Aktarım başarısız", error?.message || "KOBÜKS aktarımı tamamlanamadı.");
-    } finally {
-      setClosingAction("");
+    if (hasKobuksSync(task)) {
+      Alert.alert("Zaten işlendi", "Bu görev KOBÜKS'e aktarılmış olarak işaretlenmiş.");
+      return;
     }
+
+    // Do not mark the task as transferred until a real KOBÜKS write endpoint
+    // returns a confirmed result. The current integration service only exposes
+    // unit search; changing the task status alone is not a KOBÜKS transfer.
+    Alert.alert(
+      "KOBÜKS aktarımı hazır değil",
+      "Uygulamada şu anda KOBÜKS'e veri yazan ve aktarımı doğrulayan bir servis tanımlı değil. Görev durumu aktarım başarılıymış gibi değiştirilmeyecek. Kurumsal entegrasyon uç noktası tanımlandığında bu işlem etkinleştirilebilir.",
+    );
   }
 
   function ensureReportReady(actionTitle: string) {
