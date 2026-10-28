@@ -1162,8 +1162,68 @@ export default function TaskDetailScreen() {
             <Text style={styles.title}>{fixMojibake(task.detected_crop || "Denetim")}</Text>
             <Text style={styles.subtitle}>{fixMojibake(task.unit_no || "-")} - {fixMojibake(task.producer_name || "-")}</Text>
           </View>
-          <Text style={styles.statusPill}>{fixMojibake(currentStatus || "Bekliyor")}</Text>
+          <Text
+            style={[
+              styles.statusPill,
+              {
+                backgroundColor: inspectionCancelled
+                  ? "#991b1b"
+                  : kobuksTransferred
+                    ? "#166534"
+                    : reportDownloaded
+                      ? "#047857"
+                      : reportCreated
+                        ? "#1d4ed8"
+                        : reportReady
+                          ? "#0f766e"
+                          : inspectionStarted
+                            ? "#b45309"
+                            : assignedInspector
+                              ? "#1d4ed8"
+                              : "#475569",
+              },
+            ]}
+            numberOfLines={2}
+          >
+            {fixMojibake(currentStatus || "Bekliyor")}
+          </Text>
         </View>
+
+      <View style={styles.workflowProgressSection}>
+        <View style={styles.workflowProgressHeader}>
+          <View>
+            <Text style={styles.workflowProgressTitle}>İş akışı</Text>
+            <Text style={styles.workflowProgressSubtitle}>Görevin mevcut aşaması ve sonraki adım</Text>
+          </View>
+          <MaterialCommunityIcons name="timeline-check-outline" color="#38bdf8" size={22} />
+        </View>
+        <View style={styles.workflowProgressGrid}>
+          <WorkflowStageCard
+            label="Görev"
+            detail={assignedInspector ? "Personele atandı" : "Atama bekliyor"}
+            icon="account-check-outline"
+            state={assignedInspector ? "done" : "active"}
+          />
+          <WorkflowStageCard
+            label="Saha"
+            detail={reportReady ? "Tamamlandı" : inspectionStarted ? "Devam ediyor" : "Başlatılmadı"}
+            icon="clipboard-check-outline"
+            state={reportReady ? "done" : inspectionStarted ? "active" : "pending"}
+          />
+          <WorkflowStageCard
+            label="Rapor"
+            detail={reportDownloaded ? "Çıktı alındı" : reportCreated ? "Hazır" : reportReady ? "Oluşturulacak" : "Bekliyor"}
+            icon="file-document-outline"
+            state={reportDownloaded ? "done" : reportCreated ? "active" : "pending"}
+          />
+          <WorkflowStageCard
+            label="KOBÜKS"
+            detail={kobuksTransferred ? "Aktarıldı" : reportDownloaded ? "Aktarıma hazır" : "Sonraki adım"}
+            icon="database-check-outline"
+            state={kobuksTransferred ? "done" : reportDownloaded ? "active" : "pending"}
+          />
+        </View>
+      </View>
 
       <KobuksRecordSummary task={task} />
 
@@ -1609,6 +1669,35 @@ function buildTaskCsv(task: any) {
   return `\ufeff${[headers, row].map((items) => items.map(csvCell).join(";")).join("\n")}`;
 }
 
+function WorkflowStageCard({
+  label,
+  detail,
+  icon,
+  state,
+}: {
+  label: string;
+  detail: string;
+  icon: keyof typeof MaterialCommunityIcons.glyphMap;
+  state: "done" | "active" | "pending";
+}) {
+  const tone =
+    state === "done"
+      ? { borderColor: "#166534", backgroundColor: "#052e16", iconColor: "#4ade80", iconName: "check-circle-outline" as const }
+      : state === "active"
+        ? { borderColor: "#0369a1", backgroundColor: "#082f49", iconColor: "#38bdf8", iconName: "progress-clock" as const }
+        : { borderColor: "#334155", backgroundColor: "#111827", iconColor: "#94a3b8", iconName: "circle-outline" as const };
+
+  return (
+    <View style={[styles.workflowStageCard, { borderColor: tone.borderColor, backgroundColor: tone.backgroundColor }]}>
+      <View style={styles.workflowStageTop}>
+        <MaterialCommunityIcons name={tone.iconName} color={tone.iconColor} size={17} />
+        <Text style={styles.workflowStageLabel}>{label}</Text>
+      </View>
+      <Text style={styles.workflowStageDetail}>{detail}</Text>
+    </View>
+  );
+}
+
 function KobuksRecordSummary({ task }: { task: any }) {
   const records = [
     { label: "Üretici", value: task?.producer_name },
@@ -1885,6 +1974,35 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     overflow: "hidden",
   },
+  workflowProgressSection: {
+    backgroundColor: "#0b1220",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#1e293b",
+    padding: 12,
+    gap: 12,
+  },
+  workflowProgressHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  workflowProgressTitle: { color: "white", fontSize: 16, fontWeight: "900" },
+  workflowProgressSubtitle: { color: "#94a3b8", fontSize: 12, marginTop: 3 },
+  workflowProgressGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  workflowStageCard: {
+    flexGrow: 1,
+    flexBasis: 130,
+    minHeight: 94,
+    borderRadius: 10,
+    borderWidth: 1,
+    padding: 10,
+    gap: 7,
+  },
+  workflowStageTop: { flexDirection: "row", alignItems: "center", gap: 6 },
+  workflowStageLabel: { color: "#e2e8f0", fontSize: 12, fontWeight: "900" },
+  workflowStageDetail: { color: "#cbd5e1", fontSize: 12, lineHeight: 16, fontWeight: "700" },
   infoGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
   infoCard: {
     width: "48%",
@@ -1898,9 +2016,10 @@ const styles = StyleSheet.create({
   infoLabel: { color: "#38bdf8", fontWeight: "800", fontSize: 12 },
   infoValue: { color: "white", fontWeight: "800", marginTop: 8 },
   infoHelper: { color: "#94a3b8", marginTop: 4 },
-  actionRow: { flexDirection: "row", gap: 8 },
+  actionRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   callButton: {
-    flex: 1,
+    flexGrow: 1,
+    flexBasis: 105,
     minHeight: 48,
     borderRadius: 8,
     backgroundColor: "#0ea5e9",
@@ -1910,7 +2029,8 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   navButton: {
-    flex: 1,
+    flexGrow: 1,
+    flexBasis: 105,
     minHeight: 48,
     borderRadius: 8,
     backgroundColor: "#16a34a",
@@ -1920,7 +2040,8 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   cbsButton: {
-    flex: 1,
+    flexGrow: 1,
+    flexBasis: 105,
     minHeight: 48,
     borderRadius: 8,
     backgroundColor: "#facc15",
