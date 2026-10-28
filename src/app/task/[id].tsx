@@ -509,12 +509,12 @@ export default function TaskDetailScreen() {
   const classificationResult = useMemo(() => getClassificationResult(manualFields), [manualFields]);
   const savedClassificationText = `${String(task?.compliance_result || "")}\n${String(task?.description || "")}`;
   const savedClassificationScore =
-    savedClassificationText.match(/Sınıflandırma Puanı:\\s*(\\d+)/i)?.[1] ||
-    savedClassificationText.match(/\\((\\d+)\\s*puan\\)/i)?.[1] ||
+    savedClassificationText.match(/Sınıflandırma Puanı:\s*(\d+)/i)?.[1] ||
+    savedClassificationText.match(/\((\d+)\s*puan\)/i)?.[1] ||
     "";
   const savedClassificationClass =
-    savedClassificationText.match(/Sınıflandırma:\\s*([^\\n(]+)\\s*\\(/i)?.[1]?.trim() ||
-    savedClassificationText.match(/Sınıflandırma Sonucu:\\s*([^\\n]+)/i)?.[1]?.trim() ||
+    savedClassificationText.match(/Sınıflandırma:\s*([^\n(]+)\s*\(/i)?.[1]?.trim() ||
+    savedClassificationText.match(/Sınıflandırma Sonucu:\s*([^\n]+)/i)?.[1]?.trim() ||
     "";
   const saveMissingItems = useMemo(() => {
     const missing: string[] = [];
