@@ -16,6 +16,7 @@ export default function TaskEvidenceCameraScreen() {
   const [facing, setFacing] = useState<CameraType>("back");
   const [torchEnabled, setTorchEnabled] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [cornerLabel, setCornerLabel] = useState("a");
 
   useEffect(() => {
     if (!permission) {
@@ -40,7 +41,7 @@ export default function TaskEvidenceCameraScreen() {
         throw new Error("Fotoğraf alınamadı.");
       }
 
-      await uploadTaskEvidencePhoto(taskId, photo.uri);
+      await uploadTaskEvidencePhoto(taskId, photo.uri, cornerLabel);
       Alert.alert("Kanıt kaydedildi", "Fotoğraf ve konum bilgisi denetime eklendi.");
       router.replace(`/task/${taskId}` as any);
     } catch (error: any) {
@@ -67,7 +68,7 @@ export default function TaskEvidenceCameraScreen() {
         return;
       }
 
-      await uploadTaskEvidencePhoto(taskId, result.assets[0].uri);
+      await uploadTaskEvidencePhoto(taskId, result.assets[0].uri, cornerLabel);
       Alert.alert("Kanıt kaydedildi", "Fotoğraf ve konum bilgisi denetime eklendi.");
       router.replace(`/task/${taskId}` as any);
     } catch (error: any) {
@@ -118,7 +119,24 @@ export default function TaskEvidenceCameraScreen() {
       <View style={styles.footer}>
         <View style={styles.captureHint}>
           <MaterialCommunityIcons name="map-marker-radius-outline" color="#bfdbfe" size={17} />
-          <Text style={styles.captureHintText}>Fotoğraf GPS bilgisiyle denetime kaydedilir.</Text>
+          <Text style={styles.captureHintText}>Seçilen sera köşesinin GPS koordinatı rapora aktarılır.</Text>
+        </View>
+        <View style={styles.cornerPicker}>
+          <Text style={styles.cornerPickerTitle}>Sera köşesi</Text>
+          <View style={styles.cornerOptions}>
+            {["a", "b", "c", "d", "e", "f", "g", "h"].map((corner) => (
+              <Pressable
+                key={corner}
+                onPress={() => setCornerLabel(corner)}
+                style={[styles.cornerOption, cornerLabel === corner && styles.cornerOptionActive]}
+                disabled={saving}
+              >
+                <Text style={[styles.cornerOptionText, cornerLabel === corner && styles.cornerOptionTextActive]}>
+                  {corner.toUpperCase()}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
         </View>
 
         <View style={styles.controls}>
@@ -209,6 +227,50 @@ const styles = StyleSheet.create({
     color: "#dbeafe",
     fontWeight: "800",
     fontSize: 12,
+  },
+  cornerPicker: {
+    alignSelf: "center",
+    maxWidth: 340,
+    width: "100%",
+    borderRadius: 8,
+    padding: 8,
+    backgroundColor: "rgba(15,23,42,0.82)",
+    borderWidth: 1,
+    borderColor: "rgba(148,163,184,0.28)",
+    gap: 6,
+  },
+  cornerPickerTitle: {
+    color: "#e2e8f0",
+    fontSize: 11,
+    fontWeight: "800",
+    textAlign: "center",
+  },
+  cornerOptions: {
+    flexDirection: "row",
+    justifyContent: "center",
+    gap: 6,
+  },
+  cornerOption: {
+    width: 32,
+    height: 30,
+    borderRadius: 6,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#1e293b",
+    borderWidth: 1,
+    borderColor: "#475569",
+  },
+  cornerOptionActive: {
+    backgroundColor: "#166534",
+    borderColor: "#4ade80",
+  },
+  cornerOptionText: {
+    color: "#cbd5e1",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  cornerOptionTextActive: {
+    color: "#f0fdf4",
   },
   controls: {
     flexDirection: "row",
