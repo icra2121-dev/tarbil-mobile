@@ -365,7 +365,7 @@ export function buildOfficialEk8Html(source: Ek8Source) {
           </table>
 
           <div class="mapbox">
-            ${buildSketchSvg(source.parcelPolygon, source.greenhousePolygon.length >= 3 ? source.greenhousePolygon : source.greenhouseCoordinatePoints || [])}
+            ${buildSketchSvg(source.parcelPolygon, source.greenhouseCoordinatePoints || source.greenhousePolygon)}
           </div>
 
           <table class="coords">
