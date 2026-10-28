@@ -127,6 +127,21 @@ function normalizeTaskPolygon(value: unknown, center: MapPoint) {
   }));
 }
 
+function getPhotoCornerPoints(task: any): MapPoint[] {
+  const evidence = Array.isArray(task?.evidence) ? [...task.evidence].reverse() : [];
+  return evidence
+    .map((item) => ({
+      latitude: Number(item?.latitude),
+      longitude: Number(item?.longitude),
+    }))
+    .filter((point) =>
+      Number.isFinite(point.latitude) &&
+      Number.isFinite(point.longitude) &&
+      Math.abs(point.latitude) <= 90 &&
+      Math.abs(point.longitude) <= 180,
+    );
+}
+
 function getDescriptionValue(description: unknown, labels: string[]) {
   const lines = String(description || "")
     .split("\n")
@@ -158,6 +173,8 @@ export function buildTaskEk8Source(task: any): Ek8Source {
   };
   const parcelPolygon = normalizeTaskPolygon(task?.parcel_polygon, center);
   const greenhousePolygon = normalizeTaskPolygon(task?.greenhouse_polygon, center);
+  const photoCornerPoints = getPhotoCornerPoints(task);
+  const reportGreenhousePoints = photoCornerPoints.length >= 3 ? photoCornerPoints : greenhousePolygon;
 
   return {
     id: String(task?.id || ""),
@@ -186,7 +203,7 @@ export function buildTaskEk8Source(task: any): Ek8Source {
       getDescriptionValue(task?.description, ["Hasat Başlama Tarihi", "Hasat Tarihleri", "Hasat Başlangıç Tarihi"]),
     productionAmount: task?.production_amount || getDescriptionValue(task?.description, ["Miktar", "Üretim Miktarı"]),
     parcelPolygon,
-    greenhousePolygon,
+    greenhousePolygon: reportGreenhousePoints,
   };
 }
 
