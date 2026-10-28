@@ -482,7 +482,8 @@ export default function TaskDetailScreen() {
     profile?.id &&
     (String(task?.assigned_to || "") === String(profile.id) || String(task?.user_id || "") === String(profile.id));
   const canInspectTask = !management && Boolean(assignedToMe);
-  const inspectionEditable = canInspectTask && inspectionStarted && !reportReady && !inspectionCancelled;
+  const canEditFieldWorkflow = (management && workflowKind !== "inspection") || Boolean(canInspectTask);
+  const inspectionEditable = canEditFieldWorkflow && inspectionStarted && !reportReady && !inspectionCancelled;
   const kobuksTransferred = hasKobuksSync(task);
   const reportCreated = hasReportOutput(task);
   const reportDownloaded = hasReportDownload(task);
@@ -492,7 +493,7 @@ export default function TaskDetailScreen() {
   const assignmentMissingItems = useMemo(() => validateTaskForAssignment(task), [task]);
   const canAssignTask = management && !assignedInspector && !reportReady && !inspectionCancelled;
   const canCancelTask = management && assignedInspector && !inspectionCancelled && !reportReady;
-  const showInspectionFlow = canInspectTask && !reportReady;
+  const showInspectionFlow = canEditFieldWorkflow && !reportReady;
   const manualFieldConfig = useMemo(
     () =>
       getFieldConfig(fieldMode).map((field) =>
@@ -506,6 +507,15 @@ export default function TaskDetailScreen() {
     [fieldMode, manualFields.detected_crop, task?.detected_crop],
   );
   const classificationResult = useMemo(() => getClassificationResult(manualFields), [manualFields]);
+  const savedClassificationText = `${String(task?.compliance_result || "")}\n${String(task?.description || "")}`;
+  const savedClassificationScore =
+    savedClassificationText.match(/Sınıflandırma Puanı:\\s*(\\d+)/i)?.[1] ||
+    savedClassificationText.match(/\\((\\d+)\\s*puan\\)/i)?.[1] ||
+    "";
+  const savedClassificationClass =
+    savedClassificationText.match(/Sınıflandırma:\\s*([^\\n(]+)\\s*\\(/i)?.[1]?.trim() ||
+    savedClassificationText.match(/Sınıflandırma Sonucu:\\s*([^\\n]+)/i)?.[1]?.trim() ||
+    "";
   const saveMissingItems = useMemo(() => {
     const missing: string[] = [];
 
@@ -523,10 +533,6 @@ export default function TaskDetailScreen() {
       }
 
       return [...new Set(missing)];
-    }
-
-    if (!hasGreenhousePolygon(task)) {
-      missing.push("CBS ünite poligonu çizilmeli veya seçilmeli.");
     }
 
     if (!evidence.length) {
@@ -733,8 +739,8 @@ export default function TaskDetailScreen() {
   }
 
   async function startInspection(mode: TaskWorkflowKind) {
-    if (!canInspectTask) {
-      Alert.alert("Yetki yok", "Denetim yalnızca görevin atandığı denetçi tarafından başlatılır.");
+    if (!canEditFieldWorkflow) {
+      Alert.alert("Yetki yok", "Bu işlem için görev yetkisi bulunmuyor.");
       return;
     }
 
@@ -785,8 +791,8 @@ export default function TaskDetailScreen() {
   }
 
   function takeEvidencePhoto() {
-    if (!canInspectTask) {
-      Alert.alert("Yetki yok", "Fotoğraf yalnızca görevin atandığı denetçi tarafından eklenir.");
+    if (!canEditFieldWorkflow) {
+      Alert.alert("Yetki yok", "Fotoğraf eklemek için görev yetkisi bulunmuyor.");
       return;
     }
 
@@ -840,8 +846,8 @@ export default function TaskDetailScreen() {
   }
 
   async function saveAndFinishInspection() {
-    if (!canInspectTask) {
-      Alert.alert("Yetki yok", "Kaydetme işlemi yalnızca görevin atandığı denetçi tarafından yapılır.");
+    if (!canEditFieldWorkflow) {
+      Alert.alert("Yetki yok", "Kaydetme işlemi için görev yetkisi bulunmuyor.");
       return;
     }
 
@@ -1227,6 +1233,18 @@ export default function TaskDetailScreen() {
 
       <KobuksRecordSummary task={task} />
 
+      {workflowKind === "classification" && savedClassificationScore ? (
+        <View style={styles.scoreCard}>
+          <View>
+            <Text style={styles.scoreLabel}>Kaydedilmiş Sera Sınıflandırma Puanı</Text>
+            <Text style={styles.scoreValue}>{savedClassificationScore}</Text>
+          </View>
+          <View style={styles.scoreClassBadge}>
+            <Text style={styles.scoreClassText}>{savedClassificationClass || "Sınıflandırma kaydı"}</Text>
+          </View>
+        </View>
+      ) : null}
+
       <View style={styles.actionRow}>
         <Pressable onPress={callProducer} style={styles.callButton}>
           <MaterialCommunityIcons name="phone-outline" color="white" size={18} />
@@ -1409,7 +1427,7 @@ export default function TaskDetailScreen() {
       {showInspectionFlow ? (
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Saha İşlemleri</Text>
-          {!inspectionStarted && !management ? (
+          {!inspectionStarted && (!management || workflowKind !== "inspection") ? (
             <View style={styles.startModeGrid}>
               <Pressable
                 onPress={() => startInspection(workflowMeta.key)}
@@ -1492,7 +1510,7 @@ export default function TaskDetailScreen() {
           <Text style={styles.sectionTitle}>{fieldMode === "classification" ? "Sera Sınıfı" : "Re'sen Kayıt"}</Text>
           <Pressable onPress={openPolygonEditor} style={styles.cyanButton}>
             <MaterialCommunityIcons name="shape-polygon-plus" color="white" size={18} />
-            <Text style={styles.buttonText}>CBS Poligonu Çiz</Text>
+            <Text style={styles.buttonText}>CBS Poligonu Çiz (İsteğe Bağlı)</Text>
           </Pressable>
           <View style={styles.manualGrid}>
             {manualFieldConfig.map((field) => (
@@ -1545,7 +1563,7 @@ export default function TaskDetailScreen() {
         </View>
       ) : null}
 
-      {(inspectionEditable || reportReady) && canInspectTask ? (
+      {(inspectionEditable || reportReady) && canEditFieldWorkflow ? (
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <View style={styles.sectionHeaderText}>
