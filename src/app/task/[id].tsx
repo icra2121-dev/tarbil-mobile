@@ -1233,7 +1233,7 @@ export default function TaskDetailScreen() {
 
       <KobuksRecordSummary task={task} />
 
-      {workflowKind === "classification" && savedClassificationScore ? (
+      {workflowKind === "classification" && reportReady && savedClassificationScore ? (
         <View style={styles.scoreCard}>
           <View>
             <Text style={styles.scoreLabel}>Kaydedilmiş Sera Sınıflandırma Puanı</Text>
@@ -1439,7 +1439,7 @@ export default function TaskDetailScreen() {
             </View>
           ) : null}
 
-          {!reportReady && !inspectionCancelled ? (
+          {!reportReady && !inspectionCancelled && canInspectTask ? (
             <Pressable onPress={openQrScan} style={styles.qrButton}>
               <MaterialCommunityIcons name="qrcode-scan" color="#38bdf8" size={18} />
               <Text style={styles.qrButtonText}>QR ile Bilgi Al</Text>
