@@ -281,10 +281,17 @@ export default function HomeScreen() {
 
       {management ? (
         <View style={styles.statsGrid}>
-          <StatCard label="Görev sayısı" value={String(stats.taskCount)} tone="blue" />
-          <StatCard label="Sahadaki personel" value={String(stats.fieldPersonnelCount)} tone="green" />
           <StatCard
-            label="Çalıştığı yer"
+            label="Açık görev"
+            value={String(stats.taskCount)}
+            tone="blue"
+            onPress={() => router.push("/tasks" as any)}
+          />
+          <StatCard label="Sahadaki personel" value={String(stats.fieldPersonnelCount)} tone="green" />
+          <StatCard label="Kayıtlı personel" value={String(stats.personnelCount)} tone="amber" />
+          <StatCard label="İşlem yapılan ilçe" value={String(stats.districtCount)} tone="cyan" />
+          <StatCard
+            label="Çalışma bölgesi"
             value={workLocationTitle}
             helper={workLocationHelper}
             tone="cyan"
@@ -293,9 +300,9 @@ export default function HomeScreen() {
         </View>
       ) : (
         <View style={styles.statsGrid}>
-          <StatCard label="Çalıştığı yer" value={workLocationTitle} helper={workLocationHelper} tone="cyan" wide />
+          <StatCard label="Çalıştığım bölge" value={workLocationTitle} helper={workLocationHelper} tone="cyan" wide />
           <StatCard
-            label="Aldığım görevler"
+            label="Açık görevlerim"
             value={String(stats.taskCount)}
             tone="blue"
             onPress={() =>
@@ -318,6 +325,55 @@ export default function HomeScreen() {
           />
         </View>
       )}
+
+      <View style={styles.quickActionsPanel}>
+        <View style={styles.sectionHeader}>
+          <View style={styles.sectionHeaderText}>
+            <Text style={styles.sectionTitle}>Hızlı erişim</Text>
+            <Text style={styles.quickActionsSubtitle}>Sık kullanılan ekranlara doğrudan geçiş</Text>
+          </View>
+          <MaterialCommunityIcons name="lightning-bolt-outline" color="#fbbf24" size={22} />
+        </View>
+        <View style={styles.quickActionsGrid}>
+          {management ? (
+            <>
+              <DashboardQuickAction
+                label="Denetimler"
+                icon="clipboard-check-outline"
+                onPress={() => router.push("/tasks" as any)}
+              />
+              <DashboardQuickAction
+                label="CBS Haritası"
+                icon="map-marker-radius-outline"
+                onPress={() => router.push("/cbs" as any)}
+              />
+              <DashboardQuickAction
+                label="Raporlar"
+                icon="file-document-outline"
+                onPress={() => router.push("/reports" as any)}
+              />
+            </>
+          ) : (
+            <>
+              <DashboardQuickAction
+                label="Görevlerim"
+                icon="clipboard-list-outline"
+                onPress={() => router.push("/my-tasks" as any)}
+              />
+              <DashboardQuickAction
+                label="CBS Haritası"
+                icon="map-marker-radius-outline"
+                onPress={() => router.push("/cbs" as any)}
+              />
+              <DashboardQuickAction
+                label="Profilim"
+                icon="account-circle-outline"
+                onPress={() => router.push("/profile" as any)}
+              />
+            </>
+          )}
+        </View>
+      </View>
 
       {!management ? <AssignedTaskCard task={latestAssignedTask} /> : null}
 
@@ -345,6 +401,26 @@ export default function HomeScreen() {
         )}
       </View>
     </ScrollView>
+  );
+}
+
+function DashboardQuickAction({
+  icon,
+  label,
+  onPress,
+}: {
+  icon: keyof typeof MaterialCommunityIcons.glyphMap;
+  label: string;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable onPress={onPress} style={styles.quickActionButton}>
+      <View style={styles.quickActionIcon}>
+        <MaterialCommunityIcons name={icon} color="#7dd3fc" size={21} />
+      </View>
+      <Text style={styles.quickActionLabel}>{label}</Text>
+      <MaterialCommunityIcons name="chevron-right" color="#64748b" size={18} />
+    </Pressable>
   );
 }
 
@@ -611,6 +687,46 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "700",
     marginTop: 2,
+  },
+  quickActionsPanel: {
+    backgroundColor: "#0f172a",
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#1e293b",
+    padding: 14,
+    gap: 12,
+  },
+  quickActionsSubtitle: {
+    color: "#94a3b8",
+    fontSize: 12,
+    marginTop: 4,
+  },
+  quickActionsGrid: {
+    gap: 8,
+  },
+  quickActionButton: {
+    minHeight: 54,
+    borderRadius: 9,
+    borderWidth: 1,
+    borderColor: "#273449",
+    backgroundColor: "#111827",
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 10,
+    gap: 10,
+  },
+  quickActionIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 8,
+    backgroundColor: "#082f49",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  quickActionLabel: {
+    flex: 1,
+    color: "#e2e8f0",
+    fontWeight: "800",
   },
   recentCard: {
     backgroundColor: "#0f172a",
