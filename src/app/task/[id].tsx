@@ -1690,8 +1690,9 @@ function WorkflowStageCard({
   return (
     <View style={[styles.workflowStageCard, { borderColor: tone.borderColor, backgroundColor: tone.backgroundColor }]}>
       <View style={styles.workflowStageTop}>
-        <MaterialCommunityIcons name={tone.iconName} color={tone.iconColor} size={17} />
+        <MaterialCommunityIcons name={icon} color={tone.iconColor} size={17} />
         <Text style={styles.workflowStageLabel}>{label}</Text>
+        <MaterialCommunityIcons name={tone.iconName} color={tone.iconColor} size={15} />
       </View>
       <Text style={styles.workflowStageDetail}>{detail}</Text>
     </View>
