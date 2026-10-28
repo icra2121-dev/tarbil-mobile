@@ -1,7 +1,7 @@
 import { supabase } from "../lib/supabase";
 import { fixRecordText } from "../utils/text";
 import { getMyProfile, isAdmin } from "./profile";
-import { isTaskClosed } from "./workflowGuard";
+import { getTaskWorkflowKind, isTaskClosed } from "./workflowGuard";
 
 function normalizeCreateResult(result: any) {
   return result?.data
@@ -19,18 +19,36 @@ async function findOpenDuplicateTask(values: any) {
     return null;
   }
 
-  const result = await supabase
+  let result = await supabase
     .from("tasks")
-    .select("id,unit_no,producer_name,status,workflow_status,created_at")
+    .select("id,unit_no,producer_name,status,workflow_status,workflow_type,created_at")
     .eq("unit_no", unitNo)
     .order("created_at", { ascending: false })
-    .limit(10);
+    .limit(20);
 
   if (result.error) {
-    return null;
+    // Older deployments may not have workflow_type yet; keep the original
+    // conservative duplicate protection on those schemas.
+    result = await supabase
+      .from("tasks")
+      .select("id,unit_no,producer_name,status,workflow_status,created_at")
+      .eq("unit_no", unitNo)
+      .order("created_at", { ascending: false })
+      .limit(20);
+
+    if (result.error) {
+      return null;
+    }
+
+    return (result.data || []).find((task) => !isTaskClosed(task)) || null;
   }
 
-  return (result.data || []).find((task) => !isTaskClosed(task)) || null;
+  const requestedWorkflow = getTaskWorkflowKind(values);
+  return (
+    (result.data || []).find(
+      (task) => !isTaskClosed(task) && getTaskWorkflowKind(task) === requestedWorkflow,
+    ) || null
+  );
 }
 
 function isMissingOptionalTaskColumn(error: any) {

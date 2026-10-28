@@ -217,8 +217,11 @@ export function validateTaskForAssignment(task: any) {
 
 export function validateTaskBeforeStart(task: any) {
   const missing: string[] = [];
+  const workflowKind = getTaskWorkflowKind(task);
 
-  if (!hasAssignedInspector(task)) {
+  // Re'sen tespit and greenhouse classification can be performed directly
+  // by an admin or inspector without a separate assignment record.
+  if (workflowKind === "inspection" && !hasAssignedInspector(task)) {
     missing.push("Denetçi ataması yapılmalı.");
   }
 
@@ -234,13 +237,12 @@ export function validateTaskBeforeCompletion(task: any, evidence: any[]) {
   const workflowKind = getTaskWorkflowKind(task);
   const quickKobuksInspection = workflowKind === "inspection" && hasKobuksSameConfirmation(task);
 
-  if (!hasAssignedInspector(task)) {
+  if (workflowKind === "inspection" && !hasAssignedInspector(task)) {
     missing.push("Denetçi ataması yapılmalı.");
   }
 
-  if (!quickKobuksInspection && !hasGreenhousePolygon(task)) {
-    missing.push("CBS ünite poligonu çizilmeli veya seçilmeli.");
-  }
+  // Polygon geometry is useful for CBS, but must not block field recording.
+  // Coordinates/parcel matching can be completed separately when available.
 
   if (isTaskCancelled(task)) {
     missing.push("İptal edilen görev tamamlanamaz.");
