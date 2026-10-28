@@ -146,8 +146,15 @@ function getPhotoCornerPoints(task: any, fallbackPoints: MapPoint[]): MapPoint[]
 
   const lastPhotoIndex = photoPoints.size ? Math.max(...photoPoints.keys()) : -1;
   const pointCount = Math.max(fallbackPoints.length, lastPhotoIndex + 1);
-  return Array.from({ length: pointCount }, (_, index) => photoPoints.get(index) || fallbackPoints[index])
-    .filter((point): point is MapPoint => Boolean(point));
+  const points: MapPoint[] = [];
+
+  for (let index = 0; index < pointCount; index += 1) {
+    const point = photoPoints.get(index) || fallbackPoints[index];
+    if (!point) return fallbackPoints;
+    points.push(point);
+  }
+
+  return points;
 }
 
 function getDescriptionValue(description: unknown, labels: string[]) {
