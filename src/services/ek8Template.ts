@@ -108,7 +108,7 @@ function buildSketchSvg(parcelPoints: MapPoint[], greenhousePoints: MapPoint[]) 
     : "";
   const labels = greenhousePoints.map((point, index) => {
     const projected = project(point);
-    const label = cornerLabel(index);
+    const label = cornerLabel(index).toLocaleLowerCase("tr-TR");
     return `<circle cx="${projected.x}" cy="${projected.y}" r="2.4" fill="#166534" /><text x="${projected.x + 3}" y="${projected.y - 3}" font-size="7" fill="#14532d">${label}</text>`;
   }).join("");
   return `<svg viewBox="0 0 200 82" role="img" aria-label="Koordinatlara göre sera krokisi" preserveAspectRatio="xMidYMid meet">${parcel}${greenhouse}${labels}</svg>`;
@@ -350,7 +350,7 @@ export function buildOfficialEk8Html(source: Ek8Source) {
               <tr>
                 <td class="label">Parsel Köşe Nokta Koordinat Değeri (${cornerLabel(index)})</td>
                 <td class="value">${escapeHtml(pointText(source.parcelPolygon, index), "")}</td>
-                <td class="label">Sera Köşe Nokta Koordinat Değeri (${cornerLabel(index)})</td>
+                <td class="label">Sera Köşe Nokta Koordinat Değeri (${cornerLabel(index).toLocaleLowerCase("tr-TR")})</td>
                 <td class="value">${escapeHtml(pointText(source.greenhousePolygon, index), "")}</td>
               </tr>
             `).join("")}
