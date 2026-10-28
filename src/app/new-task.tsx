@@ -243,7 +243,12 @@ function NewTaskContent() {
         return;
       }
 
-      Alert.alert("Başarılı", "Görev oluşturuldu. Denetçi atama ekranı açılıyor.");
+      Alert.alert(
+        "Başarılı",
+        workflowType === "inspection"
+          ? "Görev oluşturuldu. Denetçi ataması yapılabilir."
+          : "Kayıt oluşturuldu. Sınıflandırma ve re'sen işlemleri için ayrıca denetçi ataması gerekmiyor.",
+      );
 
       if (result.data?.id) {
         router.replace(`/task/${result.data.id}` as any);
