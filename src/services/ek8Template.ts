@@ -128,13 +128,19 @@ function normalizeTaskPolygon(value: unknown, center: MapPoint) {
 }
 
 function getPhotoCornerPoints(task: any): MapPoint[] {
-  const evidence = Array.isArray(task?.evidence) ? [...task.evidence].reverse() : [];
+  const evidence = Array.isArray(task?.evidence)
+    ? task.evidence
+        .filter((item: any) => /^[a-z]$/i.test(String(item?.corner_label || "")))
+        .sort((first: any, second: any) =>
+          String(first.corner_label).localeCompare(String(second.corner_label), "en", { sensitivity: "base" }),
+        )
+    : [];
   return evidence
-    .map((item) => ({
+    .map((item: any) => ({
       latitude: Number(item?.latitude),
       longitude: Number(item?.longitude),
     }))
-    .filter((point) =>
+    .filter((point: MapPoint) =>
       Number.isFinite(point.latitude) &&
       Number.isFinite(point.longitude) &&
       Math.abs(point.latitude) <= 90 &&
