@@ -381,7 +381,7 @@ export function buildOfficialEk8Html(source: Ek8Source) {
               <td class="label">Ada No</td><td class="value">${escapeHtml(source.adaNo)}</td>
               <td class="label">Parsel No</td><td class="value">${escapeHtml(source.parcelNo)}</td>
             </tr>
-            ${Array.from({ length: Math.max(4, source.parcelPolygon.length, source.greenhousePolygon.length) }, (_, index) => `
+            ${Array.from({ length: Math.max(4, source.parcelPolygon.length, source.greenhousePolygon.length, source.greenhouseCoordinatePoints?.length || 0) }, (_, index) => `
               <tr>
                 <td class="label">Parsel Köşe Nokta Koordinat Değeri (${cornerLabel(index)})</td>
                 <td class="value">${escapeHtml(pointText(source.parcelPolygon, index), "")}</td>
