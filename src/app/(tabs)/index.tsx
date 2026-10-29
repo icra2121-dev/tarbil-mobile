@@ -190,7 +190,10 @@ export default function HomeScreen() {
   }
 
   async function openNotifications() {
-    const latest = notifications[0];
+    // Refresh on tap so notifications created since the dashboard was opened are included.
+    const latestNotifications = await getMyNotifications().catch(() => notifications);
+    setNotifications(latestNotifications);
+    const latest = latestNotifications[0];
 
     if (!latest) {
       Alert.alert("Bildirimler", "Yeni saha bildirimi bulunmuyor.");
@@ -308,60 +311,6 @@ export default function HomeScreen() {
           />
         </View>
       )}
-
-      <View style={styles.quickActionsPanel}>
-        <View style={styles.sectionHeader}>
-          <View style={styles.sectionHeaderText}>
-            <Text style={styles.sectionTitle}>Hızlı erişim</Text>
-            <Text style={styles.quickActionsSubtitle}>Sık kullanılan ekranlara doğrudan geçiş</Text>
-          </View>
-          <MaterialCommunityIcons name="lightning-bolt-outline" color="#fbbf24" size={22} />
-        </View>
-        <View style={styles.quickActionsGrid}>
-          {management ? (
-            <>
-              <DashboardQuickAction
-                label="Görev Oluştur"
-                icon="clipboard-plus-outline"
-                onPress={() => router.push("/new-task" as any)}
-              />
-              <DashboardQuickAction
-                label="Denetimler"
-                icon="clipboard-check-outline"
-                onPress={() => router.push("/tasks" as any)}
-              />
-              <DashboardQuickAction
-                label="CBS Haritası"
-                icon="map-marker-radius-outline"
-                onPress={() => router.push("/cbs" as any)}
-              />
-              <DashboardQuickAction
-                label="Raporlar"
-                icon="file-document-outline"
-                onPress={() => router.push("/reports" as any)}
-              />
-            </>
-          ) : (
-            <>
-              <DashboardQuickAction
-                label="Görevlerim"
-                icon="clipboard-list-outline"
-                onPress={() => router.push("/my-tasks" as any)}
-              />
-              <DashboardQuickAction
-                label="CBS Haritası"
-                icon="map-marker-radius-outline"
-                onPress={() => router.push("/cbs" as any)}
-              />
-              <DashboardQuickAction
-                label="Profilim"
-                icon="account-circle-outline"
-                onPress={() => router.push("/profile" as any)}
-              />
-            </>
-          )}
-        </View>
-      </View>
 
       {!management ? <AssignedTaskCard task={latestAssignedTask} /> : null}
 

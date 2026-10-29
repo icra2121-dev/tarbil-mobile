@@ -51,8 +51,8 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="tasks"
         options={{
-          title: "Denetimler",
-          href: management ? "/tasks" : null,
+          title: management ? "Denetimler" : "Görevlerim",
+          href: management ? "/tasks" : "/my-tasks",
           tabBarIcon: ({ color, size }) => (
             <MaterialCommunityIcons name="clipboard-check-outline" color={color} size={size} />
           ),
