@@ -395,9 +395,6 @@ function ReportsContent() {
             {filtersActive ? `${filteredTasks.length} rapor sıralanıyor` : "Filtre uygulandığında sonuçlar burada listelenir"}
           </Text>
         </View>
-        <Pressable onPress={() => router.push("/cbs" as any)} style={styles.textButton}>
-          <Text style={styles.textButtonText}>CBS</Text>
-        </Pressable>
       </View>
 
       {loading ? (
