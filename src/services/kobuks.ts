@@ -19,6 +19,10 @@ export type KobuksUnitRecord = {
   longitude?: number;
   parcel_polygon?: unknown;
   greenhouse_polygon?: unknown;
+  qfield_id?: string | null;
+  qfield_unit_type?: string | null;
+  qfield_score?: number | null;
+  qfield_judgment?: string | null;
 };
 
 type KobuksSearchPayload = {
@@ -185,5 +189,95 @@ export async function getProducerByTc(tcNo: string) {
   return await enrichUnit({
     ...unit,
     producer_tc: tcNo,
+  });
+}
+
+export async function getUnitsByProducerTc(tcNo: string) {
+  const remote = await searchRemoteKobuks(tcNo);
+  if (remote?.length) return remote;
+  const result = await supabase.from("kobuks_units").select("*").eq("producer_tc", tcNo).limit(100);
+  if (result.error) throw result.error;
+  return await Promise.all((result.data || []).map(enrichUnit));
+}
+
+/** Returns linked QField classifications for a village in one bounded batch.
+ *  The imported QField layer is separate from kobuks_units, so searching only
+ *  the KOBÜKS table makes these field records impossible to select for a task.
+ */
+export async function searchQFieldUnitsByVillage(village: string, district?: string): Promise<KobuksUnitRecord[]> {
+  const normalizedVillage = village.trim().toLocaleUpperCase("tr-TR");
+  if (normalizedVillage.length < 2) return [];
+
+  const batchResult = await supabase
+    .from("qfield_import_batches")
+    .select("id")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (batchResult.error) throw batchResult.error;
+  if (!batchResult.data) return [];
+
+  let featureQuery = supabase
+    .from("qfield_classifications")
+    .select("id,qfield_id,unit_no,unit_type,area_m2,score,judgment,district,neighborhood,geometry_geojson,matched_kobuks_unit_id")
+    .eq("import_batch_id", batchResult.data.id)
+    .eq("neighborhood", normalizedVillage)
+    .order("source_fid", { ascending: true })
+    .limit(500);
+  const normalizedDistrict = String(district || "").trim().toLocaleUpperCase("tr-TR");
+  if (normalizedDistrict) featureQuery = featureQuery.eq("district", normalizedDistrict);
+  const featureResult = await featureQuery;
+  if (featureResult.error) throw featureResult.error;
+
+  const features = featureResult.data || [];
+  const unitIds = [...new Set(features.map((feature: any) => Number(feature.matched_kobuks_unit_id)).filter(Number.isFinite))];
+  const unitResult = unitIds.length
+    ? await supabase.from("kobuks_units").select("*").in("id", unitIds)
+    : { data: [], error: null };
+  if (unitResult.error) throw unitResult.error;
+
+  const unitRows = unitResult.data || [];
+  const producerTcs = uniqueFilledValues(unitRows.map((unit: any) => unit.producer_tc));
+  const unitNos = uniqueFilledValues(unitRows.map((unit: any) => unit.unit_no));
+  const [producersResult, productionResult] = await Promise.all([
+    producerTcs.length
+      ? supabase.from("kobuks_producers").select("*").in("tc_no", producerTcs)
+      : Promise.resolve({ data: [], error: null }),
+    unitNos.length
+      ? supabase.from("kobuks_production").select("*").in("unit_no", unitNos).limit(1000)
+      : Promise.resolve({ data: [], error: null }),
+  ]);
+  if (producersResult.error) throw producersResult.error;
+  if (productionResult.error) throw productionResult.error;
+
+  const unitsById = new Map(unitRows.map((unit: any) => [Number(unit.id), unit]));
+  const producersByTc = new Map((producersResult.data || []).map((producer: any) => [String(producer.tc_no), producer]));
+  const productionByUnit = new Map<string, any[]>();
+  (productionResult.data || []).forEach((item: any) => {
+    const key = String(item.unit_no || "");
+    if (key) productionByUnit.set(key, [...(productionByUnit.get(key) || []), item]);
+  });
+
+  return features.flatMap((feature: any) => {
+    if (!feature.unit_no || !feature.geometry_geojson) return [];
+    const unit = unitsById.get(Number(feature.matched_kobuks_unit_id));
+    const tc = String(unit?.producer_tc || "");
+    const producer = producersByTc.get(tc);
+    const production = productionByUnit.get(String(unit?.unit_no || "")) || [];
+    const normalized = normalizeRecord(unit || { unit_no: feature.unit_no, greenhouse_area: feature.area_m2 }, producer, production);
+    return [{
+      ...normalized,
+      producer_name: producer?.full_name || unit?.producer_name || "",
+      tc_no: producer?.tc_no || unit?.producer_tc || "",
+      unit_no: feature.unit_no || normalized.unit_no,
+      village: feature.neighborhood || normalized.village,
+      district_name: feature.district || normalized.district_name,
+      greenhouse_area: String(feature.area_m2 ?? normalized.greenhouse_area ?? ""),
+      greenhouse_polygon: feature.geometry_geojson || normalized.greenhouse_polygon,
+      qfield_id: feature.qfield_id || feature.id,
+      qfield_unit_type: feature.unit_type,
+      qfield_score: feature.score,
+      qfield_judgment: feature.judgment,
+    }];
   });
 }

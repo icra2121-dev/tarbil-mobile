@@ -38,6 +38,7 @@ import { canUseManagementScreens, getMyProfile } from "../../services/profile";
 import { getTaskById } from "../../services/taskDetail";
 import { getTasks } from "../../services/tasks";
 import { getLiveFieldLocations, type LiveFieldLocation } from "../../services/tracking";
+import { loadLatestQFieldMapFeatures } from "../../services/qfieldGeoPackage";
 import { fixMojibake } from "../../utils/text";
 import {
   getTaskStatus,
@@ -390,6 +391,7 @@ function CBSContent() {
   const geocodeCacheRef = useRef(new Map<string, UserMapLocation | null>());
   const [units, setUnits] = useState<CbsUnit[]>(getBundledCbsUnits);
   const [tkgmParcels, setTkgmParcels] = useState<CbsParcel[]>([]);
+  const [qfieldFeatures, setQfieldFeatures] = useState<{ id: string; polygon: { latitude: number; longitude: number }[]; holes: { latitude: number; longitude: number }[][]; label: string }[]>([]);
   const [workflowTasks, setWorkflowTasks] = useState<any[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -419,6 +421,11 @@ function CBSContent() {
   const assignedAdaNo = String(params.ada_no || "");
   const assignedParcelNo = String(params.parcel_no || "");
   const management = canUseManagementScreens(profile);
+  useFocusEffect(useCallback(() => {
+    let active = true;
+    loadLatestQFieldMapFeatures().then((items) => { if (active) setQfieldFeatures(items); }).catch(() => {});
+    return () => { active = false; };
+  }, []));
   const routeWorkflowKey = String(Array.isArray(params.workflow) ? params.workflow[0] : params.workflow || "");
   const routeWorkflowKind = normalizeWorkflowKind(params.workflow);
   const [workflowOverride, setWorkflowOverride] = useState<{ routeKey: string; kind: TaskWorkflowKind } | null>(null);
@@ -500,7 +507,7 @@ function CBSContent() {
         })
         .catch(() => undefined);
       const [unitResult, parcelResult] = await Promise.allSettled([
-        loadCbsUnits({ includeKobuks: false }),
+        loadCbsUnits({ includeKobuks: false, forceRefresh: showSpinner }),
         loadTkgmParcelsForRegion(mapRegionRef.current),
       ]);
 
@@ -770,6 +777,10 @@ function CBSContent() {
       })
       .slice(0, MAX_VISIBLE_MAP_UNITS);
   }, [mapRegion, selectedId, visibleUnits]);
+
+  const visibleQFieldFeatures = useMemo(() =>
+    qfieldFeatures.filter((feature) => isPolygonVisibleInRegion(feature.polygon, mapRegion)).slice(0, MAX_RENDERED_UNITS),
+  [mapRegion, qfieldFeatures]);
 
   const renderedParcelFeatures = useMemo(() => {
     const features = new Map<
@@ -1432,6 +1443,9 @@ function CBSContent() {
                 );
               })
             : null}
+          {visibleQFieldFeatures.map((feature) => (
+            <Polygon key={`qfield-${feature.id}`} coordinates={feature.polygon} holes={feature.holes} strokeColor="#f97316" fillColor="rgba(249,115,22,0.20)" strokeWidth={2} />
+          ))}
           {renderedGreenhouseUnits.map((unit) => {
             const assigned = isAssignedUnit(unit);
             const selected = selectedId === unit.id;
@@ -2337,19 +2351,19 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   qgisScoreLabel: {
-    minWidth: 54,
-    minHeight: 22,
+    minWidth: 64,
+    minHeight: 30,
     borderRadius: 6,
     borderWidth: 1,
-    borderColor: "rgba(15,23,42,0.72)",
-    backgroundColor: "#ffffff",
+    borderColor: "#fef08a",
+    backgroundColor: "#111827",
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 5,
   },
   qgisScoreLabelText: {
-    color: "#020617",
-    fontSize: 9,
+    color: "#fef08a",
+    fontSize: 12,
     fontWeight: "800",
     textAlign: "center",
   },

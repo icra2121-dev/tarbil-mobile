@@ -1,9 +1,17 @@
 import { router } from "expo-router";
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useEffect, useState } from "react";
 
 import { signOut } from "../../services/auth";
+import { canUseManagementScreens, getMyProfile } from "../../services/profile";
 
 export default function MoreScreen() {
+  const [canManage, setCanManage] = useState(false);
+
+  useEffect(() => {
+    getMyProfile().then((profile) => setCanManage(canUseManagementScreens(profile))).catch(() => setCanManage(false));
+  }, []);
+
   async function logout() {
     await signOut();
     router.replace("/login");
@@ -17,6 +25,7 @@ export default function MoreScreen() {
       <View style={styles.menu}>
         <MenuItem title="Profil" text="Kullanıcı bilgileri ve rol" onPress={() => router.push("/profile")} />
         <MenuItem title="Raporlar" text="Ek-8 ve saha denetim çıktıları" onPress={() => router.push("/reports" as any)} />
+        {canManage ? <MenuItem title="QField dosya aktarımı" text="Yerel GeoPackage içe ve dışa aktarımı" onPress={() => router.push("/qfield-transfer" as any)} /> : null}
         <MenuItem title="Ayarlar" text="Bildirim, konum ve çevrimdışı ayarlar" onPress={() => Alert.alert("Ayarlar", "Ayarlar modülü hazırlanıyor.")} />
         <MenuItem
           title="Hakkında"

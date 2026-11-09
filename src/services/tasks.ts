@@ -36,7 +36,7 @@ export async function getTasks() {
 
   const role = profile.data?.role;
 
-  if (role === "admin" || role === "manager") {
+  if (role === "admin") {
     const result = await supabase
       .from("tasks")
       .select("*")

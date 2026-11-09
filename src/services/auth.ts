@@ -65,7 +65,7 @@ export async function signUp(email: string, password: string) {
     await supabase.from("profiles").insert({
       id: user.id,
       email: user.email,
-      role: "worker",
+      role: "inspector",
       status: "passive",
     });
   }

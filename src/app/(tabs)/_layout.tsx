@@ -83,6 +83,11 @@ export default function TabsLayout() {
           href: null,
         }}
       />
+
+      <Tabs.Screen
+        name="qfield-transfer"
+        options={{ href: null }}
+      />
     </Tabs>
   );
 }

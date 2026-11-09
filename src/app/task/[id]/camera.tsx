@@ -42,8 +42,9 @@ export default function TaskEvidenceCameraScreen() {
       }
 
       await uploadTaskEvidencePhoto(taskId, photo.uri, cornerLabel);
-      Alert.alert("Kanıt kaydedildi", "Fotoğraf ve konum bilgisi denetime eklendi.");
-      router.replace(`/task/${taskId}` as any);
+      Alert.alert("Kanıt kaydedildi", "Fotoğraf denetime eklendi. Yeni fotoğraf çekebilir veya göreve dönebilirsiniz.");
+      setCornerLabel((current) => String.fromCharCode(Math.min(104, current.charCodeAt(0) + 1)));
+      setSaving(false);
     } catch (error: any) {
       Alert.alert("Kanıt kaydedilemedi", error?.message || "Fotoğraf yüklenemedi.");
       setSaving(false);
@@ -69,8 +70,8 @@ export default function TaskEvidenceCameraScreen() {
       }
 
       await uploadTaskEvidencePhoto(taskId, result.assets[0].uri, cornerLabel);
-      Alert.alert("Kanıt kaydedildi", "Fotoğraf ve konum bilgisi denetime eklendi.");
-      router.replace(`/task/${taskId}` as any);
+      Alert.alert("Kanıt kaydedildi", "Fotoğraf denetime eklendi. Yeni fotoğraf ekleyebilir veya göreve dönebilirsiniz.");
+      setSaving(false);
     } catch (error: any) {
       Alert.alert("Kanıt kaydedilemedi", error?.message || "Fotoğraf yüklenemedi.");
       setSaving(false);
@@ -90,6 +91,7 @@ export default function TaskEvidenceCameraScreen() {
         </Pressable>
         <BottomTabMenu />
       </View>
+
     );
   }
 
@@ -115,6 +117,10 @@ export default function TaskEvidenceCameraScreen() {
           <MaterialCommunityIcons name={torchEnabled ? "flashlight" : "flashlight-off"} color="white" size={21} />
         </Pressable>
       </View>
+
+      <Pressable onPress={() => router.replace(`/task/${taskId}` as any)} style={styles.returnButton} disabled={saving}>
+        <Text style={styles.returnButtonText}>Göreve dön</Text>
+      </Pressable>
 
       <View style={styles.footer}>
         <View style={styles.captureHint}>
@@ -210,6 +216,8 @@ const styles = StyleSheet.create({
     bottom: 96,
     gap: 18,
   },
+  returnButton: { position: "absolute", top: 100, right: 16, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 8, backgroundColor: "rgba(15,23,42,0.82)" },
+  returnButtonText: { color: "white", fontSize: 13, fontWeight: "800" },
   captureHint: {
     alignSelf: "center",
     maxWidth: 300,

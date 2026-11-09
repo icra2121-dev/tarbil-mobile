@@ -16,7 +16,7 @@ import { RoleGate } from "../components/RoleGate";
 import { createTask } from "../services/createTask";
 import { KobuksUnitRecord } from "../services/kobuks";
 import { getCurrentLocation } from "../services/location";
-import { lookupMinistryUnit } from "../services/ministryLookup";
+import { searchMinistryUnits } from "../services/ministryLookup";
 import { fixRecordText } from "../utils/text";
 
 type AdminWorkflowType = "inspection" | "detection" | "classification";
@@ -91,6 +91,14 @@ function NewTaskContent() {
   const [unitNo, setUnitNo] = useState("");
   const [greenhouseArea, setGreenhouseArea] = useState("");
   const [crop, setCrop] = useState("");
+  const [searchMode, setSearchMode] = useState<"tc" | "unit" | "parcel" | "village">("unit");
+  const [searchValue, setSearchValue] = useState("");
+  const [recordSelected, setRecordSelected] = useState(false);
+  const [selectedQFieldId, setSelectedQFieldId] = useState("");
+  const [selectedQFieldScore, setSelectedQFieldScore] = useState<number | null>(null);
+  const [selectedQFieldJudgment, setSelectedQFieldJudgment] = useState("");
+  const [searchResults, setSearchResults] = useState<KobuksUnitRecord[]>([]);
+  const [searchResultLimit, setSearchResultLimit] = useState(60);
   const [description, setDescription] = useState("");
   const [gpsText, setGpsText] = useState("GPS alınmadı");
   const [selectedLatitude, setSelectedLatitude] = useState<number | null>(null);
@@ -139,10 +147,14 @@ function NewTaskContent() {
     setCrop(cleanData.detected_crop || "");
     setUnitNo(cleanData.unit_no || "");
     setGreenhouseArea(cleanData.greenhouse_area || "");
+    setSelectedQFieldId(cleanData.qfield_id || "");
+    setSelectedQFieldScore(cleanData.qfield_score ?? null);
+    setSelectedQFieldJudgment(cleanData.qfield_judgment || "");
     setSelectedLatitude(Number(cleanData.latitude || 0) || null);
     setSelectedLongitude(Number(cleanData.longitude || 0) || null);
     setSelectedParcelPolygon(cleanData.parcel_polygon || null);
     setSelectedGreenhousePolygon(cleanData.greenhouse_polygon || null);
+    setRecordSelected(true);
 
     if (cleanData.latitude && cleanData.longitude) {
       setGpsText("CBS konumu alındı");
@@ -154,6 +166,8 @@ function NewTaskContent() {
       "İş akışı: KOBÜKS/CBS kaynaklı saha görevi",
       "Kaynak: Bakanlık veri tabanı",
       `Görev türü: ${getWorkflowTypeTitle(workflowType)}`,
+      selectedQFieldId ? `QField kayıt kimliği: ${selectedQFieldId}` : null,
+      selectedQFieldId ? `QField sınıflandırması: ${selectedQFieldJudgment || "Belirtilmemiş"} · ${selectedQFieldScore ?? "-"} puan` : null,
       description.trim() ? `Not: ${description.trim()}` : null,
     ].filter(Boolean);
 
@@ -161,18 +175,25 @@ function NewTaskContent() {
   }
 
   async function loadFromKobuks() {
+    const value = searchValue.trim();
+    if (!value) { Alert.alert("Arama bilgisi gerekli", "T.C. kimlik, ünite numarası, ada/parsel veya mahalle bilgisini girin."); return; }
+    if (searchMode === "tc" && !/^\d{11}$/.test(value)) { Alert.alert("T.C. kimlik numarası geçersiz", "11 haneli sayısal T.C. kimlik numarası girin."); return; }
+    const parcelParts = value.split(/[\s/,-]+/).filter(Boolean);
+    if (searchMode === "parcel" && parcelParts.length < 2) { Alert.alert("Ada/parsel eksik", "Ada ve parseli 123/456 biçiminde girin."); return; }
     try {
-      const data = await lookupMinistryUnit({
-        tc_no: tcNo,
-        unit_no: unitNo,
+      const results = await searchMinistryUnits({
+        tc_no: searchMode === "tc" ? value : "",
+        unit_no: searchMode === "unit" ? value : "",
+        village: searchMode === "village" ? value : "",
         city,
         district_name: districtName,
-        village,
-        ada_no: adaNo,
-        parcel_no: parcelNo,
+        ada_no: searchMode === "parcel" ? parcelParts[0] : "",
+        parcel_no: searchMode === "parcel" ? parcelParts[1] : "",
       });
-      applyKobuksRecord(data);
-      Alert.alert("Başarılı", "Bakanlık bilgileri göreve aktarıldı.");
+      if (!results.length) { setSearchResults([]); setRecordSelected(false); Alert.alert("Kayıt bulunamadı", "Bu arama ölçütlerine uygun kayıt yok."); return; }
+      setSearchResults(results); setSearchResultLimit(60);
+      if (results.length === 1) { applyKobuksRecord(results[0]); setSearchResults([]); Alert.alert("Kayıt bulundu", "Eşleşen kayıt seçildi."); }
+      else { setRecordSelected(false); Alert.alert("Birden çok kayıt", `${results.length} ünite bulundu. Görev için doğru üniteyi aşağıdan seçin.`); }
     } catch (error: any) {
       Alert.alert("Hata", error?.message || "Bakanlık sorgusu başarısız.");
     }
@@ -194,8 +215,8 @@ function NewTaskContent() {
   }
 
   async function saveTask() {
-    if (!producerName.trim() || !unitNo.trim() || !adaNo.trim() || !parcelNo.trim()) {
-      Alert.alert("Bilgi eksik", "Üretici, ünite no ve ada/parsel bilgileri görev için zorunludur.");
+    if (!unitNo.trim() || (!selectedQFieldId && (!producerName.trim() || !adaNo.trim() || !parcelNo.trim()))) {
+      Alert.alert("Bilgi eksik", selectedQFieldId ? "QField kayıtlarında ünite numarası zorunludur." : "Üretici, ünite no ve ada/parsel bilgileri görev için zorunludur.");
       return;
     }
 
@@ -281,63 +302,23 @@ function NewTaskContent() {
       </View>
 
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>{hasCbsRouteSelection ? "Ünite Bilgileri" : "Kayıt Bul"}</Text>
-        <View style={styles.twoColumn}>
-          <Field label="Ünite no" value={unitNo} onChangeText={setUnitNo} placeholder="Ünite no" compact />
-          <Field label="TC/VKN" value={tcNo} onChangeText={setTcNo} placeholder="TC/VKN" compact keyboardType="number-pad" />
-        </View>
-        <View style={styles.twoColumn}>
-          <Field label="İl" value={city} onChangeText={setCity} placeholder="İl" compact />
-          <Field label="İlçe" value={districtName} onChangeText={setDistrictName} placeholder="İlçe" compact />
-        </View>
-        <Field label="Mahalle" value={village} onChangeText={setVillage} placeholder="Mahalle" />
-        <View style={styles.twoColumn}>
-          <Field label="Ada" value={adaNo} onChangeText={setAdaNo} placeholder="Ada" compact />
-          <Field label="Parsel" value={parcelNo} onChangeText={setParcelNo} placeholder="Parsel" compact />
-        </View>
-        {hasCbsRouteSelection ? (
-          <View style={styles.cbsSelectionNotice}>
-            <MaterialCommunityIcons name="map-marker-check-outline" color="#bbf7d0" size={18} />
-            <Text style={styles.cbsSelectionText}>CBS kaydı seçildi</Text>
-          </View>
-        ) : (
+        <Text style={styles.sectionTitle}>Kayıt sorgula</Text>
+        <View style={styles.searchModes}>{([["tc","T.C. kimlik"],["unit","Ünite no"],["parcel","Ada / parsel"],["village","Mahalle"]] as const).map(([key,label])=><Pressable key={key} onPress={()=>{setSearchMode(key);setSearchValue("");setSearchResults([]);setSearchResultLimit(60);setRecordSelected(false);setSelectedQFieldId("");setSelectedQFieldScore(null);setSelectedQFieldJudgment("");}} style={[styles.searchMode,searchMode===key&&styles.searchModeActive]}><Text style={[styles.searchModeText,searchMode===key&&styles.searchModeTextActive]}>{label}</Text></Pressable>)}</View>
+        <TextInput value={searchValue} onChangeText={(value)=>{setSearchValue(value);setSearchResults([]);setSearchResultLimit(60);setRecordSelected(false);setSelectedQFieldId("");setSelectedQFieldScore(null);setSelectedQFieldJudgment("");}} keyboardType={searchMode==="tc"?"number-pad":"default"} placeholder={searchMode==="tc"?"11 haneli T.C. kimlik numarası":searchMode==="unit"?"KOBÜKS ünite numarası":searchMode==="village"?"Mahalle adı (ör. İhsaniye)":"Ada/parsel (ör. 123/456)"} placeholderTextColor="#64748b" style={styles.input}/>
         <View style={styles.lookupActions}>
-          <Pressable onPress={() => openUnitFinder("CBS Haritası")} style={styles.primaryLookupButton}>
-            <MaterialCommunityIcons name="map-search-outline" color="white" size={18} />
-            <Text style={styles.primaryLookupText}>{"CBS'den Seç"}</Text>
-          </Pressable>
-          <Pressable onPress={loadFromKobuks} style={styles.secondaryLookupButton}>
-            <MaterialCommunityIcons name="database-import-outline" color="#38bdf8" size={18} />
-            <Text style={styles.secondaryButtonText}>Bilgileri Getir</Text>
-          </Pressable>
+          <Pressable onPress={loadFromKobuks} style={styles.primaryLookupButton}><MaterialCommunityIcons name="database-search-outline" color="white" size={18}/><Text style={styles.primaryLookupText}>Sorgula</Text></Pressable>
+          <Pressable onPress={() => openUnitFinder("CBS Haritası")} style={styles.secondaryLookupButton}><MaterialCommunityIcons name="map-search-outline" color="#38bdf8" size={18}/><Text style={styles.secondaryButtonText}>Haritadan seç</Text></Pressable>
         </View>
-        )}
       </View>
 
-      <View style={styles.section}>
-        <View style={styles.summaryHeader}>
-          <Text style={styles.sectionTitle}>Seçilen Kayıt</Text>
-          <View style={[styles.statusBadge, producerName ? styles.statusBadgeReady : null]}>
-            <Text style={[styles.statusBadgeText, producerName ? styles.statusBadgeTextReady : null]}>
-              {producerName ? "Hazır" : "Bekliyor"}
-            </Text>
-          </View>
-        </View>
-        <View style={styles.summaryGrid}>
-          <SummaryItem label="Üretici" value={producerName} />
-          <SummaryItem label="Telefon" value={phone} />
-          <SummaryItem label="İl / İlçe" value={city || districtName ? `${city || "-"} / ${districtName || "-"}` : ""} />
-          <SummaryItem label="Mahalle" value={village} />
-          <SummaryItem label="Ünite" value={unitNo} />
-          <SummaryItem label="Ada / Parsel" value={adaNo || parcelNo ? `${adaNo || "-"} / ${parcelNo || "-"}` : ""} />
-          <SummaryItem label="Ürün" value={crop} />
-          <SummaryItem label="Kapalı Alan" value={greenhouseArea ? `${greenhouseArea} m²` : ""} />
-        </View>
-        <View style={styles.gpsRow}>
-          <MaterialCommunityIcons name="crosshairs-gps" color="#22c55e" size={18} />
-          <Text style={styles.gpsText}>{gpsText}</Text>
-        </View>
-      </View>
+      {searchResults.length > 1 ? <View style={styles.section}><Text style={styles.sectionTitle}>Sorgu sonuçları · {searchResults.length}</Text>{searchResults.slice(0, searchResultLimit).map((row,index)=><Pressable key={`${row.unit_no||"unit"}-${index}`} style={styles.resultRow} onPress={()=>{applyKobuksRecord(row);setSearchResults([]);}}><View style={{flex:1}}><Text style={styles.resultTitle}>{row.unit_no||"Ünite no yok"} · {row.producer_name||"Üretici bilgisi yok"}</Text><Text style={styles.resultMeta}>Ada/parsel {row.ada_no||"-"}/{row.parcel_no||"-"} · {row.village||"Mahalle yok"} · {row.detected_crop||"Ürün yok"}{row.qfield_id?` · QField ${row.qfield_judgment||"Sınıflandırma"} · ${row.qfield_score??"-"} puan`:""}</Text></View><MaterialCommunityIcons name="chevron-right" color="#86efac" size={22}/></Pressable>)}{searchResultLimit<searchResults.length?<Pressable style={styles.moreResultsButton} onPress={()=>setSearchResultLimit((count)=>count+60)}><Text style={styles.moreResultsText}>60 kayıt daha göster · {searchResultLimit}/{searchResults.length}</Text></Pressable>:null}</View> : null}
+
+      {recordSelected || hasCbsRouteSelection ? <View style={styles.section}>
+        <View style={styles.summaryHeader}><Text style={styles.sectionTitle}>Sorgu sonucu</Text><View style={[styles.statusBadge,styles.statusBadgeReady]}><Text style={[styles.statusBadgeText,styles.statusBadgeTextReady]}>Kayıt seçildi</Text></View></View>
+        {selectedQFieldId ? <Text style={styles.resultMeta}>QField · {selectedQFieldJudgment || "Sınıflandırma"} · {selectedQFieldScore ?? "-"} puan · {selectedQFieldId}{producerName ? "" : " · Üretici eşleşmesi yok; kimlik bilgisi görev kaydında boş kalır"}</Text> : null}
+        <View style={styles.summaryGrid}><SummaryItem label="Üretici" value={producerName}/><SummaryItem label="T.C." value={tcNo}/><SummaryItem label="İl / İlçe" value={city||districtName?`${city||"-"} / ${districtName||"-"}`:""}/><SummaryItem label="Mahalle" value={village}/><SummaryItem label="Ünite" value={unitNo}/><SummaryItem label="Ada / Parsel" value={adaNo||parcelNo?`${adaNo||"-"} / ${parcelNo||"-"}`:""}/><SummaryItem label="Ürün" value={crop}/><SummaryItem label="Kapalı alan" value={greenhouseArea?`${greenhouseArea} m²`:""}/></View>
+        <View style={styles.gpsRow}><MaterialCommunityIcons name="crosshairs-gps" color="#22c55e" size={18}/><Text style={styles.gpsText}>{gpsText}</Text></View>
+      </View> : null}
 
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Görev Notu</Text>
@@ -479,6 +460,16 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 8,
   },
+  searchModes: { flexDirection: "row", gap: 6 },
+  resultRow: { minHeight: 58, padding: 10, borderRadius: 8, backgroundColor: "#111c30", borderWidth: 1, borderColor: "#334155", flexDirection: "row", alignItems: "center", gap: 8 },
+  moreResultsButton: { minHeight: 42, alignItems: "center", justifyContent: "center", borderRadius: 8, backgroundColor: "#1e293b" },
+  moreResultsText: { color: "#bbf7d0", fontSize: 12, fontWeight: "800" },
+  resultTitle: { color: "white", fontWeight: "800", fontSize: 13 },
+  resultMeta: { color: "#94a3b8", fontSize: 11, marginTop: 4 },
+  searchMode: { flex: 1, minHeight: 38, paddingHorizontal: 5, borderRadius: 8, alignItems: "center", justifyContent: "center", backgroundColor: "#1e293b", borderWidth: 1, borderColor: "#334155" },
+  searchModeActive: { backgroundColor: "#14532d", borderColor: "#22c55e" },
+  searchModeText: { color: "#cbd5e1", fontWeight: "700", fontSize: 11 },
+  searchModeTextActive: { color: "#dcfce7" },
   cbsSelectionNotice: {
     minHeight: 46,
     borderRadius: 8,

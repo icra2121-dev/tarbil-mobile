@@ -1,4 +1,5 @@
 import { supabase } from "../lib/supabase";
+import { invalidateCbsUnitsCache } from "./cbs";
 import { fixRecordText } from "../utils/text";
 import { getMyProfile, isAdmin } from "./profile";
 import { getTaskWorkflowKind, isTaskClosed } from "./workflowGuard";
@@ -113,6 +114,7 @@ export async function createTask(values: any) {
     .single();
 
   if (!result.error || !isMissingOptionalTaskColumn(result.error)) {
+    if (result.data) invalidateCbsUnitsCache();
     return normalizeCreateResult(result);
   }
 
@@ -125,5 +127,6 @@ export async function createTask(values: any) {
     .select()
     .single();
 
+  if (fallbackResult.data) invalidateCbsUnitsCache();
   return normalizeCreateResult(fallbackResult);
 }

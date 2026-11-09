@@ -1,8 +1,8 @@
-import { ANTALYA_REGION, CbsUnit, formatCoord, parsePolygon, type MapPoint } from "./cbs";
+import { CbsUnit, formatCoord, type MapPoint } from "./cbs";
 import { getTaskStatus } from "./workflowGuard";
 import { fixMojibake } from "../utils/text";
 
-type Ek8Source = {
+export type Ek8Source = {
   id?: string;
   city?: unknown;
   district?: unknown;
@@ -24,6 +24,7 @@ type Ek8Source = {
   productionMaterial?: unknown;
   plantingDate?: unknown;
   harvestDate?: unknown;
+  harvestEndDate?: unknown;
   productionAmount?: unknown;
   parcelPolygon: MapPoint[];
   greenhousePolygon: MapPoint[];
@@ -45,11 +46,15 @@ function escapeHtml(value: unknown, fallback = "-") {
 }
 
 function formatDate(value: unknown) {
-  const date = value ? new Date(String(value)) : new Date();
+  if (!value) return "";
+  const raw = String(value).trim();
+  // Date-only values must not shift a day when parsed in a different timezone.
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  const date = dateOnly
+    ? new Date(Number(dateOnly[1]), Number(dateOnly[2]) - 1, Number(dateOnly[3]))
+    : new Date(raw);
 
-  if (Number.isNaN(date.getTime())) {
-    return new Date().toLocaleDateString("tr-TR");
-  }
+  if (Number.isNaN(date.getTime())) return "";
 
   return date.toLocaleDateString("tr-TR");
 }
@@ -121,11 +126,17 @@ function identityDigits(value: unknown) {
   return cells;
 }
 
-function normalizeTaskPolygon(value: unknown, center: MapPoint) {
-  return parsePolygon(value, center).map((point) => ({
-    latitude: Number(point.latitude),
-    longitude: Number(point.longitude),
-  }));
+function normalizeTaskPolygon(value: unknown) {
+  let raw: any = value;
+  if (typeof raw === "string") { try { raw = JSON.parse(raw); } catch { return []; } }
+  if (!Array.isArray(raw) && raw && Array.isArray(raw.coordinates)) {
+    raw = raw.type === "Polygon" ? raw.coordinates[0] : raw.type === "MultiPolygon" ? raw.coordinates[0]?.[0] : raw.coordinates;
+  }
+  if (!Array.isArray(raw)) return [];
+  return raw.map((point: any) => ({
+    latitude: Number(point?.latitude ?? point?.lat ?? point?.[1]),
+    longitude: Number(point?.longitude ?? point?.lng ?? point?.[0]),
+  })).filter((point: MapPoint) => Number.isFinite(point.latitude) && Number.isFinite(point.longitude) && Math.abs(point.latitude) <= 90 && Math.abs(point.longitude) <= 180);
 }
 
 function getPhotoCornerPoints(task: any, fallbackPoints: MapPoint[]): MapPoint[] {
@@ -145,17 +156,8 @@ function getPhotoCornerPoints(task: any, fallbackPoints: MapPoint[]): MapPoint[]
     }
   });
 
-  const lastPhotoIndex = photoPoints.size ? Math.max(...photoPoints.keys()) : -1;
-  const pointCount = Math.max(fallbackPoints.length, lastPhotoIndex + 1);
-  const points: MapPoint[] = [];
-
-  for (let index = 0; index < pointCount; index += 1) {
-    const point = photoPoints.get(index) || fallbackPoints[index];
-    if (!point) return fallbackPoints;
-    points.push(point);
-  }
-
-  return points;
+  if (photoPoints.size) return [...photoPoints.entries()].sort(([a],[b])=>a-b).map(([,point])=>point);
+  return fallbackPoints;
 }
 
 function getDescriptionValue(description: unknown, labels: string[]) {
@@ -183,12 +185,8 @@ function getDescriptionValue(description: unknown, labels: string[]) {
 }
 
 export function buildTaskEk8Source(task: any): Ek8Source {
-  const center = {
-    latitude: Number(task?.latitude || ANTALYA_REGION.latitude),
-    longitude: Number(task?.longitude || ANTALYA_REGION.longitude),
-  };
-  const parcelPolygon = normalizeTaskPolygon(task?.parcel_polygon, center);
-  const greenhousePolygon = normalizeTaskPolygon(task?.greenhouse_polygon, center);
+  const parcelPolygon = normalizeTaskPolygon(task?.parcel_polygon);
+  const greenhousePolygon = normalizeTaskPolygon(task?.greenhouse_polygon);
   const photoCornerPoints = getPhotoCornerPoints(task, greenhousePolygon);
   const reportGreenhousePoints = photoCornerPoints.length >= 3 ? photoCornerPoints : greenhousePolygon;
 
@@ -217,6 +215,7 @@ export function buildTaskEk8Source(task: any): Ek8Source {
       task?.harvest_dates ||
       task?.harvest_start_date ||
       getDescriptionValue(task?.description, ["Hasat Başlama Tarihi", "Hasat Tarihleri", "Hasat Başlangıç Tarihi"]),
+    harvestEndDate: task?.harvest_end_date || "",
     productionAmount: task?.production_amount || getDescriptionValue(task?.description, ["Miktar", "Üretim Miktarı"]),
     parcelPolygon,
     greenhousePolygon,
@@ -341,7 +340,7 @@ export function buildOfficialEk8Html(source: Ek8Source) {
               <th>Yetiştiricilik<br/>Yöntemi<br/>Topraklı/<br/>Topraksız</th>
               <th>Üretim<br/>Materyali<br/>Tohum<br/>Fide/Fidan/<br/>Miscel/<br/>Diğer</th>
               <th>Ekim/Dikim<br/>Tarihi</th>
-              <th>Hasat<br/>Başlangıç<br/>Tarihi</th>
+              <th>Hasat<br/>Başlangıç / Bitiş<br/>Tarihi</th>
               <th>Üretim<br/>Miktarı<br/>(kg/adet)</th>
             </tr>
             <tr>
@@ -357,7 +356,7 @@ export function buildOfficialEk8Html(source: Ek8Source) {
               <td>${escapeHtml(source.cultivationMethod, "")}</td>
               <td>${escapeHtml(source.productionMaterial, "")}</td>
               <td>${escapeHtml(source.plantingDate, "")}</td>
-              <td>${escapeHtml(source.harvestDate, "")}</td>
+              <td>${escapeHtml([source.harvestDate, source.harvestEndDate].filter(Boolean).join(" / "), "")}</td>
               <td>${escapeHtml(source.productionAmount, "")}</td>
             </tr>
             <tr>${Array.from({ length: 14 }, () => "<td>&nbsp;</td>").join("")}</tr>
@@ -381,7 +380,7 @@ export function buildOfficialEk8Html(source: Ek8Source) {
               <td class="label">Ada No</td><td class="value">${escapeHtml(source.adaNo)}</td>
               <td class="label">Parsel No</td><td class="value">${escapeHtml(source.parcelNo)}</td>
             </tr>
-            ${Array.from({ length: Math.max(4, source.parcelPolygon.length, source.greenhousePolygon.length, source.greenhouseCoordinatePoints?.length || 0) }, (_, index) => `
+            ${Array.from({ length: Math.max(source.parcelPolygon.length, source.greenhousePolygon.length, source.greenhouseCoordinatePoints?.length || 0) }, (_, index) => `
               <tr>
                 <td class="label">Parsel Köşe Nokta Koordinat Değeri (${cornerLabel(index)})</td>
                 <td class="value">${escapeHtml(pointText(source.parcelPolygon, index), "")}</td>

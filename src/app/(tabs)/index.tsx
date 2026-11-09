@@ -24,14 +24,6 @@ const emptyStats: DashboardStats = {
 
 const appVersion = Constants.nativeAppVersion || Constants.expoConfig?.version || "3.0.0";
 
-const knownPersonnelWorkLocations: Record<string, { city: string; district: string; office: string }> = {
-  "ismail zengin": {
-    city: "Antalya",
-    district: "Aksu",
-    office: "Antalya Aksu İlçe Tarım ve Orman Müdürlüğü",
-  },
-};
-
 const workflowTypeLabels = {
   inspection: "Başvurulu",
   detection: "Re'sen",
@@ -78,37 +70,15 @@ function firstProfileValue(profile: any, keys: string[]) {
   return "";
 }
 
-function normalizeLookupText(value: unknown) {
-  return String(value || "")
-    .toLocaleLowerCase("tr-TR")
-    .replace(/ı/g, "i")
-    .replace(/ğ/g, "g")
-    .replace(/ü/g, "u")
-    .replace(/ş/g, "s")
-    .replace(/ö/g, "o")
-    .replace(/ç/g, "c")
-    .trim();
-}
-
-function getKnownPersonnelWorkLocation(profile: any) {
-  const candidates = [profile?.full_name, profile?.email ? String(profile.email).split("@")[0] : ""].map(normalizeLookupText);
-
-  return candidates.map((candidate) => knownPersonnelWorkLocations[candidate]).find(Boolean) || null;
-}
-
 function getWorkLocation(profile: any, tasks: any[]) {
-  const knownLocation = getKnownPersonnelWorkLocation(profile);
   const city =
     firstProfileValue(profile, ["work_city", "assigned_city", "assigned_cities", "city", "province", "province_name", "il"]) ||
-    knownLocation?.city ||
     firstFilledValue(tasks, ["city", "province", "il"]);
   const district =
     firstProfileValue(profile, ["work_district", "assigned_district", "assigned_districts", "district", "district_name", "ilce"]) ||
-    knownLocation?.district ||
     firstFilledValue(tasks, ["district_name", "district", "ilce"]);
   const office =
     firstProfileValue(profile, ["work_office", "office_name", "institution_name", "ministry_office", "directorate", "mudurluk"]) ||
-    knownLocation?.office ||
     "";
 
   return {
@@ -274,7 +244,7 @@ export default function HomeScreen() {
             onPress={() => router.push("/tasks" as any)}
           />
           <StatCard label="Sahadaki personel" value={String(stats.fieldPersonnelCount)} tone="green" />
-          <StatCard label="Kayıtlı personel" value={String(stats.personnelCount)} tone="amber" />
+          <StatCard label="Kayıtlı personel" value={String(stats.personnelCount)} tone="amber" onPress={() => router.push("/personnel" as any)} />
           <StatCard label="İşlem yapılan ilçe" value={String(stats.districtCount)} tone="cyan" />
           <StatCard
             label="Çalışma bölgesi"
@@ -313,6 +283,14 @@ export default function HomeScreen() {
       )}
 
       {!management ? <AssignedTaskCard task={latestAssignedTask} /> : null}
+
+      {management ? (
+        <Pressable onPress={() => router.push("/new-task" as any)} style={styles.createTaskCard}>
+          <View style={styles.createTaskIcon}><MaterialCommunityIcons name="plus" color="#052e16" size={22} /></View>
+          <View style={{ flex: 1 }}><Text style={styles.createTaskTitle}>Yeni görev oluştur</Text><Text style={styles.createTaskText}>Başvurulu denetim, re’sen tespit veya sınıflandırma</Text></View>
+          <MaterialCommunityIcons name="chevron-right" color="#bbf7d0" size={22} />
+        </Pressable>
+      ) : null}
 
       <View style={styles.recentCard}>
         <View style={styles.sectionHeader}>
@@ -665,6 +643,10 @@ const styles = StyleSheet.create({
     color: "#e2e8f0",
     fontWeight: "800",
   },
+  createTaskCard: { flexDirection: "row", alignItems: "center", gap: 12, padding: 16, borderRadius: 10, backgroundColor: "#14532d", borderWidth: 1, borderColor: "#22c55e" },
+  createTaskIcon: { width: 40, height: 40, borderRadius: 10, backgroundColor: "#86efac", alignItems: "center", justifyContent: "center" },
+  createTaskTitle: { color: "white", fontSize: 15, fontWeight: "900" },
+  createTaskText: { color: "#bbf7d0", marginTop: 3, fontSize: 12 },
   recentCard: {
     backgroundColor: "#0f172a",
     borderRadius: 8,
