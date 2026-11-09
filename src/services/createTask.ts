@@ -19,7 +19,7 @@ async function findOpenDuplicateTask(values: any) {
     return null;
   }
 
-  let result = await supabase
+  let result: any = await supabase
     .from("tasks")
     .select("id,unit_no,producer_name,status,workflow_status,workflow_type,created_at")
     .eq("unit_no", unitNo)

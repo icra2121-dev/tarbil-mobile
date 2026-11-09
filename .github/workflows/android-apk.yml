@@ -55,14 +55,18 @@ jobs:
 
       - name: APK dosyasını yeniden adlandır
         run: |
+          APP_VERSION=$(node -p "require('./app.json').expo.version")
+          APK_FILE="KOBUDS-v${APP_VERSION}.apk"
           mkdir -p apk-output
           cp android/app/build/outputs/apk/release/app-release.apk \
-             apk-output/KOBUDS-v4.0.2.apk
+             "apk-output/${APK_FILE}"
+          echo "APP_VERSION=${APP_VERSION}" >> "$GITHUB_ENV"
+          echo "APK_FILE=${APK_FILE}" >> "$GITHUB_ENV"
 
       - name: APK dosyasını GitHub'a yükle
         uses: actions/upload-artifact@v4
         with:
-          name: KOBUDS-v4.0.2-APK
-          path: apk-output/KOBUDS-v4.0.2.apk
+          name: KOBUDS-v${{ env.APP_VERSION }}-APK
+          path: apk-output/${{ env.APK_FILE }}
           retention-days: 30
           if-no-files-found: error
