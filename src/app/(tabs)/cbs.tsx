@@ -778,6 +778,10 @@ function CBSContent() {
       .slice(0, MAX_VISIBLE_MAP_UNITS);
   }, [mapRegion, selectedId, visibleUnits]);
 
+  const visibleQFieldFeatures = useMemo(() =>
+    qfieldFeatures.filter((feature) => isPolygonVisibleInRegion(feature.polygon, mapRegion)).slice(0, MAX_RENDERED_UNITS),
+  [mapRegion, qfieldFeatures]);
+
   const renderedParcelFeatures = useMemo(() => {
     const features = new Map<
       string,
@@ -1439,7 +1443,7 @@ function CBSContent() {
                 );
               })
             : null}
-          {qfieldFeatures.map((feature) => (
+          {visibleQFieldFeatures.map((feature) => (
             <Polygon key={`qfield-${feature.id}`} coordinates={feature.polygon} holes={feature.holes} strokeColor="#f97316" fillColor="rgba(249,115,22,0.20)" strokeWidth={2} />
           ))}
           {renderedGreenhouseUnits.map((unit) => {
