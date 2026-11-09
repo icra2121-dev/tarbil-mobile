@@ -16,7 +16,7 @@ import { RoleGate } from "../components/RoleGate";
 import { createTask } from "../services/createTask";
 import { KobuksUnitRecord } from "../services/kobuks";
 import { getCurrentLocation } from "../services/location";
-import { lookupMinistryUnit } from "../services/ministryLookup";
+import { searchMinistryUnits } from "../services/ministryLookup";
 import { fixRecordText } from "../utils/text";
 
 type AdminWorkflowType = "inspection" | "detection" | "classification";
@@ -94,6 +94,7 @@ function NewTaskContent() {
   const [searchMode, setSearchMode] = useState<"tc" | "unit" | "parcel">("unit");
   const [searchValue, setSearchValue] = useState("");
   const [recordSelected, setRecordSelected] = useState(false);
+  const [searchResults, setSearchResults] = useState<KobuksUnitRecord[]>([]);
   const [description, setDescription] = useState("");
   const [gpsText, setGpsText] = useState("GPS alınmadı");
   const [selectedLatitude, setSelectedLatitude] = useState<number | null>(null);
@@ -167,10 +168,11 @@ function NewTaskContent() {
   async function loadFromKobuks() {
     const value = searchValue.trim();
     if (!value) { Alert.alert("Arama bilgisi gerekli", "T.C. kimlik, ünite numarası veya ada/parsel bilgisini girin."); return; }
+    if (searchMode === "tc" && !/^\d{11}$/.test(value)) { Alert.alert("T.C. kimlik numarası geçersiz", "11 haneli sayısal T.C. kimlik numarası girin."); return; }
     const parcelParts = value.split(/[\s/,-]+/).filter(Boolean);
     if (searchMode === "parcel" && parcelParts.length < 2) { Alert.alert("Ada/parsel eksik", "Ada ve parseli 123/456 biçiminde girin."); return; }
     try {
-      const data = await lookupMinistryUnit({
+      const results = await searchMinistryUnits({
         tc_no: searchMode === "tc" ? value : "",
         unit_no: searchMode === "unit" ? value : "",
         city,
@@ -179,8 +181,10 @@ function NewTaskContent() {
         ada_no: searchMode === "parcel" ? parcelParts[0] : "",
         parcel_no: searchMode === "parcel" ? parcelParts[1] : "",
       });
-      applyKobuksRecord(data);
-      Alert.alert("Başarılı", "Bakanlık bilgileri göreve aktarıldı.");
+      if (!results.length) { setSearchResults([]); setRecordSelected(false); Alert.alert("Kayıt bulunamadı", "Bu arama ölçütlerine uygun kayıt yok."); return; }
+      setSearchResults(results);
+      if (results.length === 1) { applyKobuksRecord(results[0]); setSearchResults([]); Alert.alert("Kayıt bulundu", "Eşleşen kayıt seçildi."); }
+      else { setRecordSelected(false); Alert.alert("Birden çok kayıt", `${results.length} ünite bulundu. Görev için doğru üniteyi aşağıdan seçin.`); }
     } catch (error: any) {
       Alert.alert("Hata", error?.message || "Bakanlık sorgusu başarısız.");
     }
@@ -290,13 +294,15 @@ function NewTaskContent() {
 
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Kayıt sorgula</Text>
-        <View style={styles.searchModes}>{([["tc","T.C. kimlik"],["unit","Ünite no"],["parcel","Ada / parsel"]] as const).map(([key,label])=><Pressable key={key} onPress={()=>{setSearchMode(key);setSearchValue("");}} style={[styles.searchMode,searchMode===key&&styles.searchModeActive]}><Text style={[styles.searchModeText,searchMode===key&&styles.searchModeTextActive]}>{label}</Text></Pressable>)}</View>
-        <TextInput value={searchValue} onChangeText={setSearchValue} keyboardType={searchMode==="tc"?"number-pad":"default"} placeholder={searchMode==="tc"?"11 haneli T.C. kimlik numarası":searchMode==="unit"?"KOBÜKS ünite numarası":"Ada/parsel (ör. 123/456)"} placeholderTextColor="#64748b" style={styles.input}/>
+        <View style={styles.searchModes}>{([["tc","T.C. kimlik"],["unit","Ünite no"],["parcel","Ada / parsel"]] as const).map(([key,label])=><Pressable key={key} onPress={()=>{setSearchMode(key);setSearchValue("");setSearchResults([]);setRecordSelected(false);}} style={[styles.searchMode,searchMode===key&&styles.searchModeActive]}><Text style={[styles.searchModeText,searchMode===key&&styles.searchModeTextActive]}>{label}</Text></Pressable>)}</View>
+        <TextInput value={searchValue} onChangeText={(value)=>{setSearchValue(value);setSearchResults([]);setRecordSelected(false);}} keyboardType={searchMode==="tc"?"number-pad":"default"} placeholder={searchMode==="tc"?"11 haneli T.C. kimlik numarası":searchMode==="unit"?"KOBÜKS ünite numarası":"Ada/parsel (ör. 123/456)"} placeholderTextColor="#64748b" style={styles.input}/>
         <View style={styles.lookupActions}>
           <Pressable onPress={loadFromKobuks} style={styles.primaryLookupButton}><MaterialCommunityIcons name="database-search-outline" color="white" size={18}/><Text style={styles.primaryLookupText}>Sorgula</Text></Pressable>
           <Pressable onPress={() => openUnitFinder("CBS Haritası")} style={styles.secondaryLookupButton}><MaterialCommunityIcons name="map-search-outline" color="#38bdf8" size={18}/><Text style={styles.secondaryButtonText}>Haritadan seç</Text></Pressable>
         </View>
       </View>
+
+      {searchResults.length > 1 ? <View style={styles.section}><Text style={styles.sectionTitle}>Sorgu sonuçları · {searchResults.length}</Text>{searchResults.map((row,index)=><Pressable key={`${row.unit_no||"unit"}-${index}`} style={styles.resultRow} onPress={()=>{applyKobuksRecord(row);setSearchResults([]);}}><View style={{flex:1}}><Text style={styles.resultTitle}>{row.unit_no||"Ünite no yok"} · {row.producer_name||"Üretici bilgisi yok"}</Text><Text style={styles.resultMeta}>Ada/parsel {row.ada_no||"-"}/{row.parcel_no||"-"} · {row.village||"Mahalle yok"} · {row.detected_crop||"Ürün yok"}</Text></View><MaterialCommunityIcons name="chevron-right" color="#86efac" size={22}/></Pressable>)}</View> : null}
 
       {recordSelected || hasCbsRouteSelection ? <View style={styles.section}>
         <View style={styles.summaryHeader}><Text style={styles.sectionTitle}>Sorgu sonucu</Text><View style={[styles.statusBadge,styles.statusBadgeReady]}><Text style={[styles.statusBadgeText,styles.statusBadgeTextReady]}>Kayıt seçildi</Text></View></View>
@@ -445,6 +451,9 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   searchModes: { flexDirection: "row", gap: 6 },
+  resultRow: { minHeight: 58, padding: 10, borderRadius: 8, backgroundColor: "#111c30", borderWidth: 1, borderColor: "#334155", flexDirection: "row", alignItems: "center", gap: 8 },
+  resultTitle: { color: "white", fontWeight: "800", fontSize: 13 },
+  resultMeta: { color: "#94a3b8", fontSize: 11, marginTop: 4 },
   searchMode: { flex: 1, minHeight: 38, paddingHorizontal: 5, borderRadius: 8, alignItems: "center", justifyContent: "center", backgroundColor: "#1e293b", borderWidth: 1, borderColor: "#334155" },
   searchModeActive: { backgroundColor: "#14532d", borderColor: "#22c55e" },
   searchModeText: { color: "#cbd5e1", fontWeight: "700", fontSize: 11 },

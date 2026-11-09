@@ -187,3 +187,11 @@ export async function getProducerByTc(tcNo: string) {
     producer_tc: tcNo,
   });
 }
+
+export async function getUnitsByProducerTc(tcNo: string) {
+  const remote = await searchRemoteKobuks(tcNo);
+  if (remote?.length) return remote;
+  const result = await supabase.from("kobuks_units").select("*").eq("producer_tc", tcNo).limit(100);
+  if (result.error) throw result.error;
+  return await Promise.all((result.data || []).map(enrichUnit));
+}

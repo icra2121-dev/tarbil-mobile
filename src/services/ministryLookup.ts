@@ -1,5 +1,5 @@
 import { CbsUnit, getCenter, loadCbsUnits } from "./cbs";
-import { getProducerByTc, searchKobuksUnits, type KobuksUnitRecord } from "./kobuks";
+import { getProducerByTc, getUnitsByProducerTc, searchKobuksUnits, type KobuksUnitRecord } from "./kobuks";
 
 type MinistryLookupValues = {
   tc_no?: string;
@@ -115,4 +115,15 @@ export async function lookupMinistryUnit(values: MinistryLookupValues) {
   }
 
   throw new Error("Bakanlık sisteminde bu bilgilere uygun ünite bulunamadı.");
+}
+
+export async function searchMinistryUnits(values: MinistryLookupValues): Promise<KobuksUnitRecord[]> {
+  const tcNo = String(values.tc_no || "").trim();
+  const unitNo = String(values.unit_no || "").trim();
+  const adaNo = String(values.ada_no || "").trim();
+  const parcelNo = String(values.parcel_no || "").trim();
+  const rows = tcNo ? await getUnitsByProducerTc(tcNo) : unitNo ? await searchKobuksUnits(unitNo) : adaNo && parcelNo ? await searchKobuksUnits(`${adaNo}/${parcelNo}`) : [];
+  const matching = rows.filter((row) => matchesAdministrativeFields(row, values));
+  if (matching.length) return matching;
+  try { return [await lookupMinistryUnit(values)]; } catch { return []; }
 }
