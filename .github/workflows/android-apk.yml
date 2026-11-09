@@ -50,7 +50,11 @@ jobs:
 
       - name: Release APK oluştur
         working-directory: android
-        run: ./gradlew assembleRelease --no-daemon
+        run: |
+          set -a
+          source ../.env
+          set +a
+          ./gradlew assembleRelease --no-daemon
 
       - name: APK dosyasını yeniden adlandır
         run: |
