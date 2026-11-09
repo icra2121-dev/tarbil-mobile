@@ -12,6 +12,22 @@ import { supabase } from "../../lib/supabase";
 type Point = { latitude: number; longitude: number; accuracy: number; photo_uri: string; captured_at: string };
 const fields: [string,string][] = [["province","İl"],["district","İlçe"],["neighborhood","Mahalle"],["block_no","Ada numarası"],["parcel_no","Parsel numarası"],["product","Ürün"],["harvest_start","Hasat başlangıç tarihi"],["harvest_end","Hasat bitiş tarihi"]];
 
+function exifCoordinate(value: unknown, reference: unknown): number | null {
+  const parts = Array.isArray(value) ? value : String(value ?? "").split(/[;,\s]+/).filter(Boolean);
+  if (!parts.length || parts.length > 3) return null;
+  const numbers = parts.map((part) => {
+    if (typeof part === "number") return part;
+    const [numerator, denominator] = String(part).split("/").map(Number);
+    if (Number.isFinite(numerator) && Number.isFinite(denominator)) return denominator ? numerator / denominator : NaN;
+    return Number(part);
+  });
+  if (numbers.some((part) => !Number.isFinite(part))) return null;
+  const decimal = numbers[0] + (numbers[1] || 0) / 60 + (numbers[2] || 0) / 3600;
+  const ref = String(reference ?? "").trim().toUpperCase();
+  const signed = ref === "S" || ref === "W" ? -decimal : decimal;
+  return Number.isFinite(signed) ? signed : null;
+}
+
 export default function DetectionReportScreen() {
   const [data,setData]=useState<Record<string,string>>({}); const [points,setPoints]=useState<Point[]>([]); const [targetCount,setTargetCount]=useState(4); const [busy,setBusy]=useState(false);
   async function capturePoint(){
@@ -19,10 +35,18 @@ export default function DetectionReportScreen() {
     setBusy(true);try{
       const permission=await ImagePicker.requestCameraPermissionsAsync(); if(!permission.granted)throw new Error("Fotoğraf için kamera izni gerekli.");
       const gpsPermission=await Location.requestForegroundPermissionsAsync(); if(!gpsPermission.granted)throw new Error("Gerçek koordinat almak için konum izni gerekli.");
+      const photo=await ImagePicker.launchCameraAsync({mediaTypes:["images"],quality:0.82,exif:true}); if(photo.canceled||!photo.assets?.[0]?.uri)return;
+      // Take the location immediately after the shutter so the stored GPS point
+      // describes the evidence photo, rather than where the user was beforehand.
       const position=await Location.getCurrentPositionAsync({accuracy:Location.Accuracy.High});
       if(!Number.isFinite(position.coords.latitude)||!Number.isFinite(position.coords.longitude)||position.coords.accuracy===null||position.coords.accuracy>30)throw new Error("GPS doğruluğu 30 metrenin dışında. Daha iyi GPS sinyali olan bir yerde tekrar deneyin.");
-      const photo=await ImagePicker.launchCameraAsync({mediaTypes:["images"],quality:0.82,exif:true}); if(photo.canceled||!photo.assets?.[0]?.uri)return;
-      setPoints((old)=>[...old,{latitude:position.coords.latitude,longitude:position.coords.longitude,accuracy:position.coords.accuracy,photo_uri:photo.assets[0].uri,captured_at:new Date().toISOString()}]);
+      const exif = photo.assets[0].exif as Record<string, unknown> | null | undefined;
+      const photoLatitude = exifCoordinate(exif?.GPSLatitude, exif?.GPSLatitudeRef);
+      const photoLongitude = exifCoordinate(exif?.GPSLongitude, exif?.GPSLongitudeRef);
+      const latitude = photoLatitude ?? position.coords.latitude;
+      const longitude = photoLongitude ?? position.coords.longitude;
+      if(Math.abs(latitude)>90||Math.abs(longitude)>180)throw new Error("Fotoğraftaki GPS koordinatı geçersiz. Fotoğrafı yeniden çekin.");
+      setPoints((old)=>[...old,{latitude,longitude,accuracy:position.coords.accuracy,photo_uri:photo.assets[0].uri,captured_at:new Date().toISOString()}]);
     }catch(e:any){Alert.alert("Koordinat alınamadı",e?.message||"Gerçek GPS koordinatı alınamadı.");}finally{setBusy(false);}
   }
   async function createReport(){

@@ -60,6 +60,7 @@ export type LoadCbsUnitsOptions = {
   includeKobuks?: boolean;
   kobuksQuery?: string;
   kobuksLimit?: number;
+  forceRefresh?: boolean;
 };
 
 export type SaveCbsPolygonOptions = {
@@ -520,6 +521,15 @@ const KOBUKS_PRODUCTION_SELECT = [
 
 const DEFAULT_KOBUKS_SEARCH_LIMIT = 120;
 const CBS_REQUEST_TIMEOUT_MS = 8000;
+const CBS_UNITS_CACHE_MS = 15_000;
+let cbsUnitsCache: { userId: string; loadedAt: number; units: CbsUnit[] } | null = null;
+let cbsUnitsRequest: { userId: string; promise: Promise<CbsUnit[]> } | null = null;
+let cbsUnitsGeneration = 0;
+
+export function invalidateCbsUnitsCache() {
+  cbsUnitsGeneration += 1;
+  cbsUnitsCache = null;
+}
 
 async function runCbsQuery<T = any>(query: any, timeoutMs = CBS_REQUEST_TIMEOUT_MS): Promise<T> {
   const controller = new AbortController();
@@ -1359,7 +1369,7 @@ export async function saveCbsUnitPolygon(
 
   if (result.error) {
     if (isMissingPolygonSyncRpc(result.error)) {
-      return saveCbsPolygonWithLegacySchema(
+      const saved = await saveCbsPolygonWithLegacySchema(
         unit,
         normalizedParcelPolygon,
         normalizedPolygon,
@@ -1367,12 +1377,15 @@ export async function saveCbsUnitPolygon(
         area,
         options,
       );
+      invalidateCbsUnitsCache();
+      return saved;
     }
 
     throw result.error;
   }
 
   const data = result.data || {};
+  invalidateCbsUnitsCache();
   return {
     saved: true,
     targets: Array.isArray(data.targets) ? data.targets : ["cbs_units", "greenhouse_units"],
@@ -1417,6 +1430,27 @@ function shouldUseTaskAsCbsSource(task: any) {
 }
 
 export async function loadCbsUnits(options: LoadCbsUnitsOptions = {}): Promise<CbsUnit[]> {
+  if (options.kobuksQuery || options.includeKobuks) return loadCbsUnitsFresh(options);
+  const session = await supabase.auth.getSession();
+  const userId = session.data.session?.user.id || "anonymous";
+  if (options.forceRefresh) invalidateCbsUnitsCache();
+  if (cbsUnitsCache?.userId === userId && Date.now() - cbsUnitsCache.loadedAt < CBS_UNITS_CACHE_MS) {
+    return cbsUnitsCache.units.slice();
+  }
+  if (cbsUnitsRequest?.userId === userId) return (await cbsUnitsRequest.promise).slice();
+  const generation = cbsUnitsGeneration;
+  const promise = loadCbsUnitsFresh(options);
+  cbsUnitsRequest = { userId, promise };
+  try {
+    const units = await promise;
+    if (cbsUnitsRequest?.promise === promise && generation === cbsUnitsGeneration) cbsUnitsCache = { userId, loadedAt: Date.now(), units };
+    return units.slice();
+  } finally {
+    if (cbsUnitsRequest?.promise === promise) cbsUnitsRequest = null;
+  }
+}
+
+async function loadCbsUnitsFresh(options: LoadCbsUnitsOptions): Promise<CbsUnit[]> {
   const localUnits = AKSU_SOLAK_UNITS;
   const includeKobuks = Boolean(options.kobuksQuery) || options.includeKobuks === true;
   const kobuksLimit = options.kobuksLimit || DEFAULT_KOBUKS_SEARCH_LIMIT;

@@ -1,5 +1,5 @@
 import { CbsUnit, getCenter, loadCbsUnits } from "./cbs";
-import { getProducerByTc, getUnitsByProducerTc, searchKobuksUnits, type KobuksUnitRecord } from "./kobuks";
+import { getProducerByTc, getUnitsByProducerTc, searchKobuksUnits, searchQFieldUnitsByVillage, type KobuksUnitRecord } from "./kobuks";
 
 type MinistryLookupValues = {
   tc_no?: string;
@@ -122,6 +122,11 @@ export async function searchMinistryUnits(values: MinistryLookupValues): Promise
   const unitNo = String(values.unit_no || "").trim();
   const adaNo = String(values.ada_no || "").trim();
   const parcelNo = String(values.parcel_no || "").trim();
+  const village = String(values.village || "").trim();
+  if (village) {
+    const qfieldRows = await searchQFieldUnitsByVillage(village, values.district_name);
+    return qfieldRows.filter((row) => matchesAdministrativeFields(row, values));
+  }
   const rows = tcNo ? await getUnitsByProducerTc(tcNo) : unitNo ? await searchKobuksUnits(unitNo) : adaNo && parcelNo ? await searchKobuksUnits(`${adaNo}/${parcelNo}`) : [];
   const matching = rows.filter((row) => matchesAdministrativeFields(row, values));
   if (matching.length) return matching;

@@ -47,11 +47,14 @@ function escapeHtml(value: unknown, fallback = "-") {
 
 function formatDate(value: unknown) {
   if (!value) return "";
-  const date = new Date(String(value));
+  const raw = String(value).trim();
+  // Date-only values must not shift a day when parsed in a different timezone.
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  const date = dateOnly
+    ? new Date(Number(dateOnly[1]), Number(dateOnly[2]) - 1, Number(dateOnly[3]))
+    : new Date(raw);
 
-  if (Number.isNaN(date.getTime())) {
-    return new Date().toLocaleDateString("tr-TR");
-  }
+  if (Number.isNaN(date.getTime())) return "";
 
   return date.toLocaleDateString("tr-TR");
 }
@@ -337,7 +340,7 @@ export function buildOfficialEk8Html(source: Ek8Source) {
               <th>Yetiştiricilik<br/>Yöntemi<br/>Topraklı/<br/>Topraksız</th>
               <th>Üretim<br/>Materyali<br/>Tohum<br/>Fide/Fidan/<br/>Miscel/<br/>Diğer</th>
               <th>Ekim/Dikim<br/>Tarihi</th>
-              <th>Hasat<br/>Başlangıç<br/>Tarihi</th>
+              <th>Hasat<br/>Başlangıç / Bitiş<br/>Tarihi</th>
               <th>Üretim<br/>Miktarı<br/>(kg/adet)</th>
             </tr>
             <tr>
@@ -353,7 +356,7 @@ export function buildOfficialEk8Html(source: Ek8Source) {
               <td>${escapeHtml(source.cultivationMethod, "")}</td>
               <td>${escapeHtml(source.productionMaterial, "")}</td>
               <td>${escapeHtml(source.plantingDate, "")}</td>
-              <td>${escapeHtml(source.harvestDate, "")}</td>
+              <td>${escapeHtml([source.harvestDate, source.harvestEndDate].filter(Boolean).join(" / "), "")}</td>
               <td>${escapeHtml(source.productionAmount, "")}</td>
             </tr>
             <tr>${Array.from({ length: 14 }, () => "<td>&nbsp;</td>").join("")}</tr>

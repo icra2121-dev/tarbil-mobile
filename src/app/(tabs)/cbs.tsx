@@ -507,7 +507,7 @@ function CBSContent() {
         })
         .catch(() => undefined);
       const [unitResult, parcelResult] = await Promise.allSettled([
-        loadCbsUnits({ includeKobuks: false }),
+        loadCbsUnits({ includeKobuks: false, forceRefresh: showSpinner }),
         loadTkgmParcelsForRegion(mapRegionRef.current),
       ]);
 

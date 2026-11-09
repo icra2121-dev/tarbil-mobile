@@ -1319,12 +1319,12 @@ export default function TaskDetailScreen() {
               {inspectors.length ? (
                 <View style={styles.pickerWrap}>
                   <Picker selectedValue={selectedInspector} onValueChange={setSelectedInspector} style={styles.picker}>
-                    <Picker.Item label="Denetçi seçin" value="" />
+                    <Picker.Item label="Denetçi seçin" value="" color="#f8fafc" />
                     {inspectors.map((item) => {
                       const subtitle = getProfileSubtitle(item);
                       const label = `${getProfileName(item)} - ${getProfileRole(item)}${subtitle ? ` - ${subtitle}` : ""}`;
 
-                      return <Picker.Item key={String(item.id)} label={label} value={String(item.id)} />;
+                      return <Picker.Item key={String(item.id)} label={label} value={String(item.id)} color="#f8fafc" />;
                     })}
                   </Picker>
                 </View>
@@ -1929,9 +1929,9 @@ function ManualField({
       ) : options?.length ? (
         <View style={styles.manualPickerWrap}>
           <Picker selectedValue={value} onValueChange={onChangeText} style={styles.picker}>
-            <Picker.Item label={`${label} seçin`} value="" />
+            <Picker.Item label={`${label} seçin`} value="" color="#f8fafc" />
             {options.map((option) => (
-              <Picker.Item key={option} label={option} value={option} />
+              <Picker.Item key={option} label={option} value={option} color="#f8fafc" />
             ))}
           </Picker>
         </View>

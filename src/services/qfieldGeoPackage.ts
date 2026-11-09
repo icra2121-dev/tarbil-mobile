@@ -6,6 +6,10 @@ import { supabase } from "../lib/supabase";
 
 const MAX_GPKG_BYTES = 50 * 1024 * 1024;
 const MAX_FEATURES = 10000;
+const QFIELD_MAP_CACHE_MS = 60_000;
+let qfieldMapCache: { loadedAt: number; features: ReturnType<typeof normalizeQFieldMapRows> } | null = null;
+let qfieldMapRequest: Promise<ReturnType<typeof normalizeQFieldMapRows>> | null = null;
+let qfieldMapGeneration = 0;
 const GEOJSON_FIELDS: Record<string, string> = {
   "Ünite Tipi": "unit_type",
   "Konstrüksiyon Yaşı": "construction_age",
@@ -356,6 +360,9 @@ export async function saveQFieldImport(preview: QFieldImportPreview) {
     throw error;
   }
 
+  qfieldMapGeneration += 1;
+  qfieldMapCache = null;
+  qfieldMapRequest = null;
   return batchResult.data.id as string;
 }
 
@@ -546,16 +553,8 @@ export async function loadLatestQFieldExportRecords(): Promise<QFieldExportRecor
   });
 }
 
-export async function loadLatestQFieldMapFeatures() {
-  const batch = await supabase.from("qfield_import_batches").select("id").order("created_at", { ascending: false }).limit(1).maybeSingle();
-  if (batch.error) throw batch.error;
-  if (!batch.data) return [];
-  const result = await supabase.from("qfield_classifications")
-    .select("id,unit_no,score,judgment,geometry_geojson")
-    .eq("import_batch_id", batch.data.id)
-    .limit(1500);
-  if (result.error) throw result.error;
-  return (result.data || []).flatMap((row: any) => {
+function normalizeQFieldMapRows(rows: any[]) {
+  return (rows || []).flatMap((row: any) => {
     const geometry = row.geometry_geojson as GeoJsonGeometry | null;
     if (!geometry) return [];
     const polygons = geometry.type === "Polygon" ? [geometry.coordinates] : geometry.coordinates;
@@ -568,6 +567,33 @@ export async function loadLatestQFieldMapFeatures() {
       return [{ id: `${row.id}:${partIndex}`, polygon, holes, label: [row.unit_no, row.score, row.judgment].filter(Boolean).join(" · ") }];
     });
   });
+}
+
+export async function loadLatestQFieldMapFeatures() {
+  if (qfieldMapCache && Date.now() - qfieldMapCache.loadedAt < QFIELD_MAP_CACHE_MS) return qfieldMapCache.features;
+  if (qfieldMapRequest) return qfieldMapRequest;
+  const generation = qfieldMapGeneration;
+  const request = loadLatestQFieldMapFeaturesFresh();
+  qfieldMapRequest = request;
+  try {
+    const features = await request;
+    if (generation === qfieldMapGeneration) qfieldMapCache = { loadedAt: Date.now(), features };
+    return features;
+  } finally {
+    if (qfieldMapRequest === request) qfieldMapRequest = null;
+  }
+}
+
+async function loadLatestQFieldMapFeaturesFresh() {
+  const batch = await supabase.from("qfield_import_batches").select("id").order("created_at", { ascending: false }).limit(1).maybeSingle();
+  if (batch.error) throw batch.error;
+  if (!batch.data) return [];
+  const result = await supabase.from("qfield_classifications")
+    .select("id,unit_no,score,judgment,geometry_geojson")
+    .eq("import_batch_id", batch.data.id)
+    .limit(1500);
+  if (result.error) throw result.error;
+  return normalizeQFieldMapRows(result.data || []);
 }
 
 export async function createQFieldFeedbackGeoPackage(records: QFieldExportRecord[]) {

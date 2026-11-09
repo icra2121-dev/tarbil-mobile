@@ -24,14 +24,6 @@ const emptyStats: DashboardStats = {
 
 const appVersion = Constants.nativeAppVersion || Constants.expoConfig?.version || "3.0.0";
 
-const knownPersonnelWorkLocations: Record<string, { city: string; district: string; office: string }> = {
-  "ismail zengin": {
-    city: "Antalya",
-    district: "Aksu",
-    office: "Antalya Aksu İlçe Tarım ve Orman Müdürlüğü",
-  },
-};
-
 const workflowTypeLabels = {
   inspection: "Başvurulu",
   detection: "Re'sen",
@@ -78,37 +70,15 @@ function firstProfileValue(profile: any, keys: string[]) {
   return "";
 }
 
-function normalizeLookupText(value: unknown) {
-  return String(value || "")
-    .toLocaleLowerCase("tr-TR")
-    .replace(/ı/g, "i")
-    .replace(/ğ/g, "g")
-    .replace(/ü/g, "u")
-    .replace(/ş/g, "s")
-    .replace(/ö/g, "o")
-    .replace(/ç/g, "c")
-    .trim();
-}
-
-function getKnownPersonnelWorkLocation(profile: any) {
-  const candidates = [profile?.full_name, profile?.email ? String(profile.email).split("@")[0] : ""].map(normalizeLookupText);
-
-  return candidates.map((candidate) => knownPersonnelWorkLocations[candidate]).find(Boolean) || null;
-}
-
 function getWorkLocation(profile: any, tasks: any[]) {
-  const knownLocation = getKnownPersonnelWorkLocation(profile);
   const city =
     firstProfileValue(profile, ["work_city", "assigned_city", "assigned_cities", "city", "province", "province_name", "il"]) ||
-    knownLocation?.city ||
     firstFilledValue(tasks, ["city", "province", "il"]);
   const district =
     firstProfileValue(profile, ["work_district", "assigned_district", "assigned_districts", "district", "district_name", "ilce"]) ||
-    knownLocation?.district ||
     firstFilledValue(tasks, ["district_name", "district", "ilce"]);
   const office =
     firstProfileValue(profile, ["work_office", "office_name", "institution_name", "ministry_office", "directorate", "mudurluk"]) ||
-    knownLocation?.office ||
     "";
 
   return {
