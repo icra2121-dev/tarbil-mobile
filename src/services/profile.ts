@@ -1,6 +1,6 @@
 import { supabase } from "../lib/supabase";
 
-export type UserRole = "admin" | "manager" | "inspector" | "worker";
+export type UserRole = "admin" | "inspector";
 
 export async function getMyProfile() {
   const {
@@ -34,7 +34,7 @@ export function isAdmin(profile:any) {
 }
 
 export function canUseManagementScreens(profile:any) {
-  return isAdmin(profile) || profile?.role === "manager";
+  return isAdmin(profile);
 }
 
 export function canCreateTasks(profile:any) {

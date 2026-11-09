@@ -1,0 +1,10 @@
+import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { useFocusEffect } from "expo-router";
+import { useCallback, useState } from "react";
+import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from "react-native";
+import { RoleGate } from "../components/RoleGate";
+import { supabase } from "../lib/supabase";
+
+export default function PersonnelScreen(){return <RoleGate adminOnly><PersonnelList/></RoleGate>}
+function PersonnelList(){const [rows,setRows]=useState<any[]>([]);const [loading,setLoading]=useState(true);useFocusEffect(useCallback(()=>{let active=true;supabase.from("profiles").select("id,full_name,email,role,title,city,district,status").order("full_name").then(({data,error})=>{if(active){if(!error)setRows(data||[]);setLoading(false)}});return()=>{active=false}},[]));return <ScrollView style={s.root} contentContainerStyle={s.content}><Text style={s.title}>Görevli personel</Text><Text style={s.sub}>{rows.length} kayıt · sistemdeki tüm personel</Text>{loading?<ActivityIndicator color="#86efac"/>:rows.map(p=><View key={p.id} style={s.card}><View style={s.icon}><MaterialCommunityIcons name="account-outline" size={21} color="#bbf7d0"/></View><View style={{flex:1}}><Text style={s.name}>{p.full_name||p.email||"İsimsiz personel"}</Text><Text style={s.meta}>{[p.title,p.city,p.district].filter(Boolean).join(" · ")||p.email||"Personel kaydı"}</Text></View><Text style={[s.role,p.status==="passive"&&s.passive]}>{p.status==="passive"?"Pasif":p.role==="admin"?"Admin":"Denetçi"}</Text></View>)}</ScrollView>}
+const s=StyleSheet.create({root:{flex:1,backgroundColor:"#020617"},content:{padding:18,gap:10},title:{color:"white",fontSize:24,fontWeight:"900"},sub:{color:"#94a3b8",marginBottom:8},card:{flexDirection:"row",alignItems:"center",gap:12,padding:12,borderRadius:10,backgroundColor:"#0f172a",borderWidth:1,borderColor:"#1e293b"},icon:{width:40,height:40,borderRadius:10,backgroundColor:"#14532d",alignItems:"center",justifyContent:"center"},name:{color:"white",fontWeight:"800"},meta:{color:"#94a3b8",fontSize:12,marginTop:3},role:{color:"#86efac",fontSize:11,fontWeight:"900"},passive:{color:"#fca5a5"}});

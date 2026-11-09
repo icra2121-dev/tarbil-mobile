@@ -91,6 +91,9 @@ function NewTaskContent() {
   const [unitNo, setUnitNo] = useState("");
   const [greenhouseArea, setGreenhouseArea] = useState("");
   const [crop, setCrop] = useState("");
+  const [searchMode, setSearchMode] = useState<"tc" | "unit" | "parcel">("unit");
+  const [searchValue, setSearchValue] = useState("");
+  const [recordSelected, setRecordSelected] = useState(false);
   const [description, setDescription] = useState("");
   const [gpsText, setGpsText] = useState("GPS alınmadı");
   const [selectedLatitude, setSelectedLatitude] = useState<number | null>(null);
@@ -143,6 +146,7 @@ function NewTaskContent() {
     setSelectedLongitude(Number(cleanData.longitude || 0) || null);
     setSelectedParcelPolygon(cleanData.parcel_polygon || null);
     setSelectedGreenhousePolygon(cleanData.greenhouse_polygon || null);
+    setRecordSelected(true);
 
     if (cleanData.latitude && cleanData.longitude) {
       setGpsText("CBS konumu alındı");
@@ -161,15 +165,19 @@ function NewTaskContent() {
   }
 
   async function loadFromKobuks() {
+    const value = searchValue.trim();
+    if (!value) { Alert.alert("Arama bilgisi gerekli", "T.C. kimlik, ünite numarası veya ada/parsel bilgisini girin."); return; }
+    const parcelParts = value.split(/[\s/,-]+/).filter(Boolean);
+    if (searchMode === "parcel" && parcelParts.length < 2) { Alert.alert("Ada/parsel eksik", "Ada ve parseli 123/456 biçiminde girin."); return; }
     try {
       const data = await lookupMinistryUnit({
-        tc_no: tcNo,
-        unit_no: unitNo,
+        tc_no: searchMode === "tc" ? value : "",
+        unit_no: searchMode === "unit" ? value : "",
         city,
         district_name: districtName,
         village,
-        ada_no: adaNo,
-        parcel_no: parcelNo,
+        ada_no: searchMode === "parcel" ? parcelParts[0] : "",
+        parcel_no: searchMode === "parcel" ? parcelParts[1] : "",
       });
       applyKobuksRecord(data);
       Alert.alert("Başarılı", "Bakanlık bilgileri göreve aktarıldı.");
@@ -281,63 +289,20 @@ function NewTaskContent() {
       </View>
 
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>{hasCbsRouteSelection ? "Ünite Bilgileri" : "Kayıt Bul"}</Text>
-        <View style={styles.twoColumn}>
-          <Field label="Ünite no" value={unitNo} onChangeText={setUnitNo} placeholder="Ünite no" compact />
-          <Field label="TC/VKN" value={tcNo} onChangeText={setTcNo} placeholder="TC/VKN" compact keyboardType="number-pad" />
-        </View>
-        <View style={styles.twoColumn}>
-          <Field label="İl" value={city} onChangeText={setCity} placeholder="İl" compact />
-          <Field label="İlçe" value={districtName} onChangeText={setDistrictName} placeholder="İlçe" compact />
-        </View>
-        <Field label="Mahalle" value={village} onChangeText={setVillage} placeholder="Mahalle" />
-        <View style={styles.twoColumn}>
-          <Field label="Ada" value={adaNo} onChangeText={setAdaNo} placeholder="Ada" compact />
-          <Field label="Parsel" value={parcelNo} onChangeText={setParcelNo} placeholder="Parsel" compact />
-        </View>
-        {hasCbsRouteSelection ? (
-          <View style={styles.cbsSelectionNotice}>
-            <MaterialCommunityIcons name="map-marker-check-outline" color="#bbf7d0" size={18} />
-            <Text style={styles.cbsSelectionText}>CBS kaydı seçildi</Text>
-          </View>
-        ) : (
+        <Text style={styles.sectionTitle}>Kayıt sorgula</Text>
+        <View style={styles.searchModes}>{([["tc","T.C. kimlik"],["unit","Ünite no"],["parcel","Ada / parsel"]] as const).map(([key,label])=><Pressable key={key} onPress={()=>{setSearchMode(key);setSearchValue("");}} style={[styles.searchMode,searchMode===key&&styles.searchModeActive]}><Text style={[styles.searchModeText,searchMode===key&&styles.searchModeTextActive]}>{label}</Text></Pressable>)}</View>
+        <TextInput value={searchValue} onChangeText={setSearchValue} keyboardType={searchMode==="tc"?"number-pad":"default"} placeholder={searchMode==="tc"?"11 haneli T.C. kimlik numarası":searchMode==="unit"?"KOBÜKS ünite numarası":"Ada/parsel (ör. 123/456)"} placeholderTextColor="#64748b" style={styles.input}/>
         <View style={styles.lookupActions}>
-          <Pressable onPress={() => openUnitFinder("CBS Haritası")} style={styles.primaryLookupButton}>
-            <MaterialCommunityIcons name="map-search-outline" color="white" size={18} />
-            <Text style={styles.primaryLookupText}>{"CBS'den Seç"}</Text>
-          </Pressable>
-          <Pressable onPress={loadFromKobuks} style={styles.secondaryLookupButton}>
-            <MaterialCommunityIcons name="database-import-outline" color="#38bdf8" size={18} />
-            <Text style={styles.secondaryButtonText}>Bilgileri Getir</Text>
-          </Pressable>
+          <Pressable onPress={loadFromKobuks} style={styles.primaryLookupButton}><MaterialCommunityIcons name="database-search-outline" color="white" size={18}/><Text style={styles.primaryLookupText}>Sorgula</Text></Pressable>
+          <Pressable onPress={() => openUnitFinder("CBS Haritası")} style={styles.secondaryLookupButton}><MaterialCommunityIcons name="map-search-outline" color="#38bdf8" size={18}/><Text style={styles.secondaryButtonText}>Haritadan seç</Text></Pressable>
         </View>
-        )}
       </View>
 
-      <View style={styles.section}>
-        <View style={styles.summaryHeader}>
-          <Text style={styles.sectionTitle}>Seçilen Kayıt</Text>
-          <View style={[styles.statusBadge, producerName ? styles.statusBadgeReady : null]}>
-            <Text style={[styles.statusBadgeText, producerName ? styles.statusBadgeTextReady : null]}>
-              {producerName ? "Hazır" : "Bekliyor"}
-            </Text>
-          </View>
-        </View>
-        <View style={styles.summaryGrid}>
-          <SummaryItem label="Üretici" value={producerName} />
-          <SummaryItem label="Telefon" value={phone} />
-          <SummaryItem label="İl / İlçe" value={city || districtName ? `${city || "-"} / ${districtName || "-"}` : ""} />
-          <SummaryItem label="Mahalle" value={village} />
-          <SummaryItem label="Ünite" value={unitNo} />
-          <SummaryItem label="Ada / Parsel" value={adaNo || parcelNo ? `${adaNo || "-"} / ${parcelNo || "-"}` : ""} />
-          <SummaryItem label="Ürün" value={crop} />
-          <SummaryItem label="Kapalı Alan" value={greenhouseArea ? `${greenhouseArea} m²` : ""} />
-        </View>
-        <View style={styles.gpsRow}>
-          <MaterialCommunityIcons name="crosshairs-gps" color="#22c55e" size={18} />
-          <Text style={styles.gpsText}>{gpsText}</Text>
-        </View>
-      </View>
+      {recordSelected || hasCbsRouteSelection ? <View style={styles.section}>
+        <View style={styles.summaryHeader}><Text style={styles.sectionTitle}>Sorgu sonucu</Text><View style={[styles.statusBadge,styles.statusBadgeReady]}><Text style={[styles.statusBadgeText,styles.statusBadgeTextReady]}>Kayıt seçildi</Text></View></View>
+        <View style={styles.summaryGrid}><SummaryItem label="Üretici" value={producerName}/><SummaryItem label="T.C." value={tcNo}/><SummaryItem label="İl / İlçe" value={city||districtName?`${city||"-"} / ${districtName||"-"}`:""}/><SummaryItem label="Mahalle" value={village}/><SummaryItem label="Ünite" value={unitNo}/><SummaryItem label="Ada / Parsel" value={adaNo||parcelNo?`${adaNo||"-"} / ${parcelNo||"-"}`:""}/><SummaryItem label="Ürün" value={crop}/><SummaryItem label="Kapalı alan" value={greenhouseArea?`${greenhouseArea} m²`:""}/></View>
+        <View style={styles.gpsRow}><MaterialCommunityIcons name="crosshairs-gps" color="#22c55e" size={18}/><Text style={styles.gpsText}>{gpsText}</Text></View>
+      </View> : null}
 
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Görev Notu</Text>
@@ -479,6 +444,11 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 8,
   },
+  searchModes: { flexDirection: "row", gap: 6 },
+  searchMode: { flex: 1, minHeight: 38, paddingHorizontal: 5, borderRadius: 8, alignItems: "center", justifyContent: "center", backgroundColor: "#1e293b", borderWidth: 1, borderColor: "#334155" },
+  searchModeActive: { backgroundColor: "#14532d", borderColor: "#22c55e" },
+  searchModeText: { color: "#cbd5e1", fontWeight: "700", fontSize: 11 },
+  searchModeTextActive: { color: "#dcfce7" },
   cbsSelectionNotice: {
     minHeight: 46,
     borderRadius: 8,

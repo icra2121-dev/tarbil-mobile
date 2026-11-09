@@ -546,6 +546,27 @@ export async function loadLatestQFieldExportRecords(): Promise<QFieldExportRecor
   });
 }
 
+export async function loadLatestQFieldMapFeatures() {
+  const batch = await supabase.from("qfield_import_batches").select("id").order("created_at", { ascending: false }).limit(1).maybeSingle();
+  if (batch.error) throw batch.error;
+  if (!batch.data) return [];
+  const result = await supabase.from("qfield_classifications")
+    .select("id,unit_no,score,judgment,geometry_geojson")
+    .eq("import_batch_id", batch.data.id)
+    .limit(1500);
+  if (result.error) throw result.error;
+  return (result.data || []).flatMap((row: any) => {
+    const geometry = row.geometry_geojson as GeoJsonGeometry | null;
+    if (!geometry) return [];
+    const rings = geometry.type === "Polygon" ? geometry.coordinates : geometry.coordinates[0];
+    const ring = rings?.[0] || [];
+    const polygon = ring.map(([longitude, latitude]) => ({ latitude: Number(latitude), longitude: Number(longitude) }))
+      .filter((point) => Number.isFinite(point.latitude) && Number.isFinite(point.longitude));
+    if (polygon.length < 4) return [];
+    return [{ id: String(row.id), polygon, label: [row.unit_no, row.score, row.judgment].filter(Boolean).join(" · ") }];
+  });
+}
+
 export async function createQFieldFeedbackGeoPackage(records: QFieldExportRecord[]) {
   if (!records.length) throw new Error("Dışa aktarılacak sera verisi bulunamadı.");
 

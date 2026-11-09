@@ -73,15 +73,19 @@ const detectionFields: FieldConfig[] = [
 ];
 
 const classificationFields: FieldConfig[] = [
-  { key: "construction_age", label: "Konstrüksiyon Yaşı", options: ["1-9", "10-19", "20-29", "30+"] },
-  { key: "foundation_concrete", label: "Çevre Temel Betonu", options: ["Var (Yüksek)", "Var (Sabitleme)", "Yok"] },
-  { key: "cover_material", label: "Örtü Tipi", options: ["Plastik", "Cam", "Diğer"] },
-  { key: "gutter_height", label: "Oluk Altı Yüksekliği", options: ["2.50 m altı", "2.51 - 4.99 m", "5.00 m ve üzeri"] },
-  { key: "profile_material", label: "Profil Malzeme Türü", options: ["Kutu Profil", "Boru Profil", "L Profil", "Diğer"] },
-  { key: "profile_structure", label: "Profil Yapısı", options: ["Galvanizli", "Demir(Boyalı)", "Demir(Boyasız)"] },
-  { key: "ventilation", label: "Havalandırma Şekli", options: ["Tepe", "Yan+Tepe", "Yan", "Yok"] },
-  { key: "automation", label: "Otomasyon Tipi", options: ["İklimlendirme, Gübreleme, Havalandırma", "Yok"] },
-  { key: "heating_type", label: "Isıtma Türü", options: ["Soba+Tepe Yağmurlama", "Tepe Yağmurlama", "Soba", "Yok"] },
+  { key: "unit_type", label: "Ünite Tipi", options: ["Sera", "Yüksek Tünel"] },
+  { key: "construction_age", label: "Konstrüksiyon Yaşı (yıl)", options: ["1", "4", "7", "11", "16", "21", "26", "30"] },
+  { key: "foundation_concrete", label: "Çevre Temel Betonu", options: ["Var (Sabitleme)", "Var (Yüksek)", "Yok"] },
+  { key: "cover_material", label: "Örtü Tipi", options: ["Cam", "Cam+Plastik", "Plastik"] },
+  { key: "roof_type", label: "Çatı Tipi", options: ["Beşik", "Gotik", "Yay"] },
+  { key: "roof_width", label: "Çatı Genişliği (m)", options: ["4", "4.5", "5", "5.5", "6", "7", "11", "15"] },
+  { key: "gutter_height", label: "Oluk Altı Yüksekliği (m)", options: ["2.5", "3", "4", "5", "6", "7"] },
+  { key: "ventilation", label: "Havalandırma Şekli", options: ["Tepe", "Yan", "Yan+Tepe"] },
+  { key: "profile_material", label: "Profil Malzeme Türü", options: ["Boru Profil", "Kutu Profil", "L Profil"] },
+  { key: "profile_structure", label: "Profil Yapısı", options: ["Demir(Boyalı)", "Demir (Boyasız)", "Galvanizli"] },
+  { key: "heating_type", label: "Isıtma Türü", options: ["Soba", "Yok"] },
+  { key: "automation", label: "Otomasyon Tipi", options: ["Yok"] },
+  { key: "cultivation_type", label: "Yetiştirme Türü", options: ["Topraklı"] },
 ];
 
 const detectionRequiredFieldKeys = new Set(["detected_crop", "unit_status", "usage_type", "planting_area"]);
@@ -159,7 +163,12 @@ function getFieldConfig(workflowKind: TaskWorkflowKind) {
 }
 
 function getClassificationAgeBand(fields: Record<string, string>) {
-  return String(fields.construction_age || "").trim();
+  const age = Number(String(fields.construction_age || "").replace(/[^0-9.]/g, ""));
+  if (!Number.isFinite(age)) return "";
+  if (age < 10) return "1-9";
+  if (age < 20) return "10-19";
+  if (age < 30) return "20-29";
+  return "30+";
 }
 
 function getClassificationScore(fields: Record<string, string>) {
@@ -469,7 +478,7 @@ export default function TaskDetailScreen() {
     };
   }, [task]);
 
-  const management = isAdmin(profile) || profile?.role === "manager";
+  const management = isAdmin(profile);
   const currentStatus = getTaskStatus(task);
   const workflowKind = getTaskWorkflowKind(task);
   const workflowLabel = workflowLabels[workflowKind];

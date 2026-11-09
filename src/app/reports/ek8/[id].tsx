@@ -11,39 +11,29 @@ type Point = {
   longitude: number;
 };
 
-const FALLBACK_CENTER: Point = {
-  latitude: 36.8969,
-  longitude: 30.7133,
-};
+const FALLBACK_CENTER: Point = { latitude: 0, longitude: 0 };
 
 function toNumber(value: unknown, fallback = 0) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function buildFallbackPolygon(center: Point): Point[] {
-  const delta = 0.0012;
-  return [
-    { latitude: center.latitude + delta, longitude: center.longitude - delta },
-    { latitude: center.latitude + delta, longitude: center.longitude + delta },
-    { latitude: center.latitude - delta, longitude: center.longitude + delta },
-    { latitude: center.latitude - delta, longitude: center.longitude - delta },
-  ];
-}
-
 function parsePolygon(value: unknown, center: Point): Point[] {
-  if (Array.isArray(value)) {
-    const points = value
+  let raw: any = value;
+  if (typeof raw === "string") { try { raw = JSON.parse(raw); } catch { return []; } }
+  if (!Array.isArray(raw) && raw && Array.isArray(raw.coordinates)) raw = raw.type === "Polygon" ? raw.coordinates[0] : raw.type === "MultiPolygon" ? raw.coordinates[0]?.[0] : raw.coordinates;
+  if (Array.isArray(raw)) {
+    const points = raw
       .map((item) => ({
-        latitude: toNumber(item?.latitude ?? item?.lat, NaN),
-        longitude: toNumber(item?.longitude ?? item?.lng, NaN),
+        latitude: toNumber(item?.latitude ?? item?.lat ?? item?.[1], NaN),
+        longitude: toNumber(item?.longitude ?? item?.lng ?? item?.[0], NaN),
       }))
-      .filter((point) => Number.isFinite(point.latitude) && Number.isFinite(point.longitude));
+      .filter((point) => Number.isFinite(point.latitude) && Number.isFinite(point.longitude) && Math.abs(point.latitude) <= 90 && Math.abs(point.longitude) <= 180);
 
     if (points.length >= 3) return points;
   }
 
-  return buildFallbackPolygon(center);
+  return [];
 }
 
 function getCenter(points: Point[]) {

@@ -113,7 +113,7 @@ export default function QrScanScreen() {
 
     getMyProfile()
       .then((profile) => {
-        if (active && (isAdmin(profile) || profile?.role === "manager")) {
+        if (active && isAdmin(profile)) {
           setBlocked(true);
         }
       })
