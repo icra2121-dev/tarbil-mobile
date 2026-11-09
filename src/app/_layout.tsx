@@ -3,8 +3,6 @@ import { useEffect } from "react";
 import { StatusBar, StyleSheet } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 
-import { registerForPush } from "../services/push";
-import { savePushToken } from "../services/savePush";
 import { startOfflineSyncListener } from "../services/sync";
 
 export default function RootLayout() {
@@ -12,15 +10,6 @@ export default function RootLayout() {
     const stopOfflineSync = startOfflineSyncListener();
     // startLiveTracking();
     // startBackgroundTracking();
-    registerForPush()
-      .then((token) => {
-        if (token) {
-          return savePushToken(token);
-        }
-
-        return undefined;
-      })
-      .catch(() => undefined);
     return stopOfflineSync;
   }, []);
 
