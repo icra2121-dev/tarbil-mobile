@@ -391,7 +391,7 @@ function CBSContent() {
   const geocodeCacheRef = useRef(new Map<string, UserMapLocation | null>());
   const [units, setUnits] = useState<CbsUnit[]>(getBundledCbsUnits);
   const [tkgmParcels, setTkgmParcels] = useState<CbsParcel[]>([]);
-  const [qfieldFeatures, setQfieldFeatures] = useState<{ id: string; polygon: { latitude: number; longitude: number }[]; label: string }[]>([]);
+  const [qfieldFeatures, setQfieldFeatures] = useState<{ id: string; polygon: { latitude: number; longitude: number }[]; holes: { latitude: number; longitude: number }[][]; label: string }[]>([]);
   const [workflowTasks, setWorkflowTasks] = useState<any[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -1440,7 +1440,7 @@ function CBSContent() {
               })
             : null}
           {qfieldFeatures.map((feature) => (
-            <Polygon key={`qfield-${feature.id}`} coordinates={feature.polygon} strokeColor="#f97316" fillColor="rgba(249,115,22,0.20)" strokeWidth={2} />
+            <Polygon key={`qfield-${feature.id}`} coordinates={feature.polygon} holes={feature.holes} strokeColor="#f97316" fillColor="rgba(249,115,22,0.20)" strokeWidth={2} />
           ))}
           {renderedGreenhouseUnits.map((unit) => {
             const assigned = isAssignedUnit(unit);

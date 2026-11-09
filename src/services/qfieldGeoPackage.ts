@@ -558,12 +558,15 @@ export async function loadLatestQFieldMapFeatures() {
   return (result.data || []).flatMap((row: any) => {
     const geometry = row.geometry_geojson as GeoJsonGeometry | null;
     if (!geometry) return [];
-    const rings = geometry.type === "Polygon" ? geometry.coordinates : geometry.coordinates[0];
-    const ring = rings?.[0] || [];
-    const polygon = ring.map(([longitude, latitude]) => ({ latitude: Number(latitude), longitude: Number(longitude) }))
-      .filter((point) => Number.isFinite(point.latitude) && Number.isFinite(point.longitude));
-    if (polygon.length < 4) return [];
-    return [{ id: String(row.id), polygon, label: [row.unit_no, row.score, row.judgment].filter(Boolean).join(" · ") }];
+    const polygons = geometry.type === "Polygon" ? [geometry.coordinates] : geometry.coordinates;
+    return polygons.flatMap((rings, partIndex) => {
+      const toPoints = (ring: number[][]) => ring.map(([longitude, latitude]) => ({ latitude: Number(latitude), longitude: Number(longitude) }))
+        .filter((point) => Number.isFinite(point.latitude) && Number.isFinite(point.longitude));
+      const polygon = toPoints(rings?.[0] || []);
+      if (polygon.length < 4) return [];
+      const holes = (rings || []).slice(1).map(toPoints).filter((ring) => ring.length >= 4);
+      return [{ id: `${row.id}:${partIndex}`, polygon, holes, label: [row.unit_no, row.score, row.judgment].filter(Boolean).join(" · ") }];
+    });
   });
 }
 
