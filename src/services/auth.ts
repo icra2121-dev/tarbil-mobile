@@ -1,4 +1,4 @@
-import { supabase } from "../lib/supabase";
+import { isSupabaseConfigured, supabase } from "../lib/supabase";
 import { clearDemoSession } from "./demoSession";
 
 const institutionalEmailDomain = process.env.EXPO_PUBLIC_INSTITUTIONAL_EMAIL_DOMAIN || "tarimorman.gov.tr";
@@ -7,6 +7,15 @@ export async function signIn(email: string, password: string) {
   const normalizedEmail = email.trim().toLowerCase();
 
   await clearDemoSession();
+
+  if (!isSupabaseConfigured) {
+    return {
+      data: { user: null, session: null },
+      error: {
+        message: "Giriş servisi yapılandırılmamış. Uygulama yöneticisiyle iletişime geçin.",
+      },
+    };
+  }
 
   if (!normalizedEmail.endsWith(`@${institutionalEmailDomain}`)) {
     return {

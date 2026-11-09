@@ -34,13 +34,12 @@ jobs:
 
       - name: Ortam değişkenlerini oluştur
         run: |
+          cp .env.example .env
           echo "EXPO_PUBLIC_CBS_API_KEY=${{ secrets.EXPO_PUBLIC_CBS_API_KEY }}" >> .env
           echo "EXPO_PUBLIC_CBS_API_URL=${{ secrets.EXPO_PUBLIC_CBS_API_URL }}" >> .env
           echo "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY=${{ secrets.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY }}" >> .env
           echo "EXPO_PUBLIC_KOBUKS_API_KEY=${{ secrets.EXPO_PUBLIC_KOBUKS_API_KEY }}" >> .env
           echo "EXPO_PUBLIC_KOBUKS_API_URL=${{ secrets.EXPO_PUBLIC_KOBUKS_API_URL }}" >> .env
-          echo "EXPO_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}" >> .env
-          echo "EXPO_PUBLIC_SUPABASE_URL=${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}" >> .env
 
       - name: Gradle çalıştırma izni ver
         run: chmod +x android/gradlew
@@ -51,18 +50,26 @@ jobs:
 
       - name: Release APK oluştur
         working-directory: android
-        run: ./gradlew assembleRelease --no-daemon
+        run: |
+          set -a
+          source ../.env
+          set +a
+          ./gradlew assembleRelease --no-daemon
 
       - name: APK dosyasını yeniden adlandır
         run: |
+          APP_VERSION=$(node -p "require('./app.json').expo.version")
+          APK_FILE="KOBUDS-v${APP_VERSION}.apk"
           mkdir -p apk-output
           cp android/app/build/outputs/apk/release/app-release.apk \
-             apk-output/KOBUDS-v4.0.2.apk
+             "apk-output/${APK_FILE}"
+          echo "APP_VERSION=${APP_VERSION}" >> "$GITHUB_ENV"
+          echo "APK_FILE=${APK_FILE}" >> "$GITHUB_ENV"
 
       - name: APK dosyasını GitHub'a yükle
         uses: actions/upload-artifact@v4
         with:
-          name: KOBUDS-v4.0.2-APK
-          path: apk-output/KOBUDS-v4.0.2.apk
+          name: KOBUDS-v${{ env.APP_VERSION }}-APK
+          path: apk-output/${{ env.APK_FILE }}
           retention-days: 30
           if-no-files-found: error
